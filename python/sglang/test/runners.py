@@ -17,7 +17,7 @@ import json
 import multiprocessing as mp
 import os
 from dataclasses import dataclass
-from typing import List, Union
+from typing import List, Union, Optional
 
 import torch
 import torch.nn.functional as F
@@ -26,20 +26,27 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from sglang.srt.server import Runtime
 from sglang.test.test_utils import DEFAULT_PORT_FOR_SRT_TEST_RUNNER
 
-DEFAULT_PROMPTS = [
-    # the output of gemma-2-2b from SRT is unstable on the commented prompt
-    # "The capital of France is",
-    "Apple is red. Banana is Yellow. " * 800 + "Apple is",
-    "The capital of the United Kingdom is",
-    "Today is a sunny day and I like",
-    "AI is a field of computer science focused on",
-]
+DEFAULT_PROMPTS = []
+def load_default_prompt(default_prompt_path: Optional[str] = None):
+    global DEFAULT_PROMPTS
+    
+    DEFAULT_PROMPTS = [
+        # the output of gemma-2-2b from SRT is unstable on the commented prompt
+        # "The capital of France is",
+        "Apple is red. Banana is Yellow. " * 800 + "Apple is",
+        "The capital of the United Kingdom is",
+        "Today is a sunny day and I like",
+        "AI is a field of computer science focused on",
+    ]
 
-dirpath = os.path.dirname(__file__)
-with open(os.path.join(dirpath, "long_prompt.txt"), "r") as f:
-    long_prompt = f.read()
-DEFAULT_PROMPTS.append(long_prompt)
-
+    dirpath = os.path.dirname(__file__)
+    if default_prompt_path is None:
+        default_prompt_path = os.path.join(dirpath, "long_prompt.txt")
+    if os.path.exists(default_prompt_path):
+        with open(default_prompt_path, "r") as f:
+            long_prompt = f.read()
+        DEFAULT_PROMPTS.append(long_prompt)
+load_default_prompt()
 NUM_TOP_LOGPROBS = 5
 
 

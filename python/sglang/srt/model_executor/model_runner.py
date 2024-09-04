@@ -19,6 +19,7 @@ import gc
 import importlib
 import importlib.resources
 import logging
+import os
 import pkgutil
 from functools import lru_cache
 from typing import Optional, Tuple, Type
@@ -207,6 +208,7 @@ class ModelRunner:
             device_config=self.device_config,
             parallel_config=None,
             scheduler_config=None,
+            multimodal_config=None,
             lora_config=None,
             cache_config=None,
         )
@@ -521,6 +523,8 @@ class ModelRunner:
 
     @torch.inference_mode()
     def forward_decode(self, batch: ScheduleBatch):
+        print(batch.prefix_lens_cpu)
+        
         if (
             self.cuda_graph_runner
             and self.cuda_graph_runner.can_run(len(batch.reqs))
@@ -577,14 +581,30 @@ class ModelRunner:
     def forward(
         self, batch: ScheduleBatch, forward_mode: ForwardMode
     ) -> Tuple[SampleOutput, LogitsProcessorOutput]:
+        benchmark_runner = os.getenv('BENCHMARK_RUNNER', '0') == '1'
+        
+        if benchmark_runner:
+            event_start = torch.cuda.Event(True)
+            event_end = torch.cuda.Event(True)
+            event_start.record()
+        
         if self.is_multimodal_model and forward_mode == ForwardMode.EXTEND:
-            return self.forward_extend_multi_modal(batch)
+            out = self.forward_extend_multi_modal(batch)
         elif forward_mode == ForwardMode.DECODE:
-            return self.forward_decode(batch)
+            out = self.forward_decode(batch)
         elif forward_mode == ForwardMode.EXTEND:
-            return self.forward_extend(batch)
+            out = self.forward_extend(batch)
         else:
             raise ValueError(f"Invaid forward mode: {forward_mode}")
+        
+        if benchmark_runner:
+            event_end.record()
+            event_end.synchronize()
+            elapsed = event_start.elapsed_time(event_end)
+                        
+            print(f'[{forward_mode.name}, {tuple(batch.input_ids.shape)}] took {elapsed:.3f} ms')
+        
+        return out
 
 
 @lru_cache()
