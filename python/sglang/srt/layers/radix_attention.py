@@ -15,7 +15,9 @@ limitations under the License.
 
 """Radix attention."""
 
+import os
 from typing import Optional
+import warnings
 
 import torch
 from flashinfer.cascade import merge_state
@@ -184,15 +186,15 @@ class RadixAttention(nn.Module):
 
         query = q.contiguous().view(-1, self.tp_q_head_num, self.head_dim)
         k_cache, v_cache = input_metadata.token_to_kv_pool.get_kv_buffer(self.layer_id)
-        print(
-            query.shape, k_cache.shape, v_cache.shape, 
-            input_metadata.positions.shape,                         # (bsz,) == position_ids
-            input_metadata.seq_lens.shape,                          # (bsz,) == cache_seq_lens
-            input_metadata.req_to_token_pool.req_to_token.shape,    # (n_pools, model_seq_len)  +|
-            input_metadata.req_pool_indices.shape,                  # (bsz, ) bsz-> idx_pools   +|=> block_tables
-        )
+        # print(
+        #     query.shape, k_cache.shape, v_cache.shape, 
+        #     input_metadata.positions.shape,                         # (bsz,) == position_ids
+        #     input_metadata.seq_lens.shape,                          # (bsz,) == cache_seq_lens
+        #     input_metadata.req_to_token_pool.req_to_token.shape,    # (n_pools, model_seq_len)  +|
+        #     input_metadata.req_pool_indices.shape,                  # (bsz, ) bsz-> idx_pools   +|=> block_tables
+        # )
 
-        if self.layer_id < 4:
+        if self.layer_id < int(os.getenv('HIP_NUM_DENSE_LAYERS', '4')):
             o = decode_wrapper.forward(
                 query,
                 (k_cache, v_cache),
@@ -200,6 +202,7 @@ class RadixAttention(nn.Module):
                 logits_soft_cap=self.logit_cap,
             )
         else:
+            warnings.warn('HiP attention is used in decoding!')
             o, metadata = decode_forward_hip(
                 query, 
                 k_cache, 
