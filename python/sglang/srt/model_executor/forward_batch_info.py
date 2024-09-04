@@ -31,6 +31,11 @@ from sglang.srt.mem_cache.memory_pool import BaseTokenToKVPool, ReqToTokenPool
 if TYPE_CHECKING:
     from sglang.srt.model_executor.model_runner import ModelRunner
     from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
+    from flashinfer import (
+        BatchPrefillWithRaggedKVCacheWrapper, 
+        BatchPrefillWithPagedKVCacheWrapper, 
+        BatchDecodeWithPagedKVCacheWrapper
+    )
 
 
 class ForwardMode(IntEnum):

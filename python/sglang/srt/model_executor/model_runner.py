@@ -523,8 +523,6 @@ class ModelRunner:
 
     @torch.inference_mode()
     def forward_decode(self, batch: ScheduleBatch):
-        print(batch.prefix_lens_cpu)
-        
         if (
             self.cuda_graph_runner
             and self.cuda_graph_runner.can_run(len(batch.reqs))

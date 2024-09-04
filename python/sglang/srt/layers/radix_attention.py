@@ -182,12 +182,34 @@ class RadixAttention(nn.Module):
             assert v is not None
             self.store_kv_cache(k, v, input_metadata)
 
-        o = decode_wrapper.forward(
-            q.contiguous().view(-1, self.tp_q_head_num, self.head_dim),
-            input_metadata.token_to_kv_pool.get_kv_buffer(self.layer_id),
-            sm_scale=self.scaling,
-            logits_soft_cap=self.logit_cap,
+        query = q.contiguous().view(-1, self.tp_q_head_num, self.head_dim)
+        k_cache, v_cache = input_metadata.token_to_kv_pool.get_kv_buffer(self.layer_id)
+        print(
+            query.shape, k_cache.shape, v_cache.shape, 
+            input_metadata.positions.shape,                         # (bsz,) == position_ids
+            input_metadata.seq_lens.shape,                          # (bsz,) == cache_seq_lens
+            input_metadata.req_to_token_pool.req_to_token.shape,    # (n_pools, model_seq_len)  +|
+            input_metadata.req_pool_indices.shape,                  # (bsz, ) bsz-> idx_pools   +|=> block_tables
         )
+
+        if self.layer_id < 4:
+            o = decode_wrapper.forward(
+                query,
+                (k_cache, v_cache),
+                sm_scale=self.scaling,
+                logits_soft_cap=self.logit_cap,
+            )
+        else:
+            o, metadata = decode_forward_hip(
+                query, 
+                k_cache, 
+                v_cache, 
+                input_metadata.positions,
+                input_metadata.seq_lens,
+                input_metadata.req_to_token_pool.req_to_token,
+                input_metadata.req_pool_indices,
+                self.scaling,
+            )
 
         return o.view(-1, self.tp_q_head_num * self.head_dim)
 
@@ -206,3 +228,50 @@ class RadixAttention(nn.Module):
         input_metadata.token_to_kv_pool.set_kv_buffer(
             self.layer_id, input_metadata.out_cache_loc, cache_k, cache_v
         )
+
+
+def decode_forward_hip(
+    query: torch.Tensor, 
+    k_cache: torch.Tensor, 
+    v_cache: torch.Tensor,
+    positions: torch.Tensor,
+    seq_lens: torch.Tensor,
+    req_to_tokens: torch.Tensor,
+    req_pool_indices: torch.Tensor,
+    sm_scale: float,
+):
+    from hip import paged_hip_attention, HiPAttentionArgs
+    
+    BSZ, HEAD, HID = query.shape
+    query = query.view(BSZ, 1, HEAD, HID)
+    
+    N_PAGE, HEAD_KV, _HID = k_cache.shape
+    assert v_cache.shape == k_cache.shape
+    assert _HID == HID
+    k_cache = k_cache.view(N_PAGE, 1, HEAD_KV, HID)
+    v_cache = v_cache.view(N_PAGE, 1, HEAD_KV, HID)
+    
+    block_table = req_to_tokens.index_select(
+        dim=0, index=req_pool_indices
+    )
+    _BSZ, MODEL_SEQ_LEN = block_table.shape
+    assert BSZ == _BSZ
+    
+    cache_seq_lens = seq_lens
+    position_ids = positions.unsqueeze(-1)
+    
+    args = HiPAttentionArgs(
+        k_cache=k_cache,
+        v_cache=v_cache,
+        block_table=block_table,
+        cache_seq_lens=cache_seq_lens,
+        position_ids=position_ids,
+    )
+    
+    context, metadata = paged_hip_attention(
+        query,
+        softmax_scale=sm_scale,
+        args=args,
+    )
+    
+    return context.view(BSZ, HEAD, HID), metadata

@@ -20,11 +20,6 @@ DEFAULT_PROMPTS = []
 
 def reset_prompts(batch_size=16, word_count=32000):
     DEFAULT_PROMPTS.clear()
-    wiki = wikipediaapi.Wikipedia(
-        'CoolBot/0.0 (https://example.org/coolbot/; coolbot@example.org)',
-        language='en', 
-        extract_format=wikipediaapi.ExtractFormat.WIKI
-    )
     
     keywords = [
         'Korea', 'Japan', 'China', 'Google', 'Meta_Platforms', 'Microsoft', 'Amazon_(company)', 
@@ -32,8 +27,22 @@ def reset_prompts(batch_size=16, word_count=32000):
     ] * 100
     keywords = keywords[:batch_size]
     for keyword in keywords:
-        page = wiki.page(keyword)
-        words = page.text.split()
+        os.makedirs('./cache/wiki', exist_ok=True)
+        cache_path = f'cache/wiki/{keyword}.txt'
+        if not os.path.exists(cache_path):
+            wiki = wikipediaapi.Wikipedia(
+                'CoolBot/0.0 (https://example.org/coolbot/; coolbot@example.org)',
+                language='en', 
+                extract_format=wikipediaapi.ExtractFormat.WIKI
+            )
+            page = wiki.page(keyword)
+            text = page.text
+            with open(cache_path, 'w') as f:
+                f.write(text)
+        else:
+            with open(cache_path, 'r') as f:
+                text = f.read()
+        words = text.split()
         while len(words) < word_count:
             words.extend(words[:])
         DEFAULT_PROMPTS.append(' '.join(words[:word_count]) + ' ')
