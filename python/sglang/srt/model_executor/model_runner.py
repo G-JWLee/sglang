@@ -490,7 +490,13 @@ class ModelRunner:
             # TODO: Currently, cuda graph only captures decode steps, which only exists for generation models
             return
 
-        from sglang.srt.model_executor.cuda_graph_runner import CudaGraphRunner
+        graph_backend = 'hip'
+        if graph_backend == 'cuda':
+            from sglang.srt.model_executor.cuda_graph_runner import CudaGraphRunner as GraphRunner
+        elif graph_backend == 'hip':
+            from sglang.srt.model_executor.hip_graph_runner import HiPGraphRunner as GraphRunner
+        else:
+            raise Exception()
 
         if self.server_args.disable_cuda_graph or self.server_args.disable_flashinfer:
             self.cuda_graph_runner = None
@@ -503,7 +509,7 @@ class ModelRunner:
         else:
             batch_size_list = [1, 2, 4] + [i * 8 for i in range(1, 21)]
 
-        self.cuda_graph_runner = CudaGraphRunner(
+        self.cuda_graph_runner = GraphRunner(
             self,
             max_batch_size_to_capture=max(batch_size_list),
             use_torch_compile=self.server_args.enable_torch_compile,
@@ -585,6 +591,9 @@ class ModelRunner:
             event_start = torch.cuda.Event(True)
             event_end = torch.cuda.Event(True)
             event_start.record()
+            
+        if (forward_mode != ForwardMode.DECODE) and hasattr(self.cuda_graph_runner, 'reset_step'):
+            self.cuda_graph_runner.reset_step()
         
         if self.is_multimodal_model and forward_mode == ForwardMode.EXTEND:
             out = self.forward_extend_multi_modal(batch)
@@ -603,7 +612,6 @@ class ModelRunner:
             print(f'[{forward_mode.name}, {tuple(batch.input_ids.shape)}] took {elapsed:.3f} ms')
         
         return out
-
 
 @lru_cache()
 def import_model_classes():

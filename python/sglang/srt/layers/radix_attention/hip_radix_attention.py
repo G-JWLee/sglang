@@ -29,8 +29,45 @@ from sglang.srt.layers.extend_attention import extend_attention_fwd
 from sglang.srt.model_executor.forward_batch_info import ForwardMode, InputMetadata
 from sglang.srt.model_executor.model_runner import global_server_args_dict
 
+from .radix_attention import RadixAttention as SRTRadixAttention
 
-class RadixAttention(nn.Module):
+class HiPAttentionEnvs:
+    def __init__(self):
+        self.refresh_interval = int(os.getenv('HIP_REFRESH_INTERVAL', '8'))
+        self.hip_dense_layers = os.getenv('HIP_DENSE_LAYERS', '0,1,2')
+        try:
+            t = int(self.hip_dense_layers)
+            warnings.warn(
+                'You gave single integer for hip dense layers. '
+                'From HiP 1.1, this changed into list of integers, e.g., `0,1,2` '
+                'Are you sure about this?'
+            )
+        except: pass
+        self.hip_dense_layers = [int(i) for i in self.hip_dense_layers.split(',')]
+        
+        self.hip_k = int(os.getenv('HIP_K', '512'))
+        self.hip_bq = int(os.getenv('HIP_BQ', '32'))
+        self.hip_bsq = int(os.getenv('HIP_BSK', '1'))
+        self.hip_bk = int(os.getenv('HIP_BK', '2'))
+        self.hip_bsk = int(os.getenv('HIP_BSK', '1'))
+        
+        self.hip_prefill_bq = int(os.getenv('HIP_PREFILL_BQ', self.hip_bq))
+        self.hip_prefill_bsq = int(os.getenv('HIP_PREFILL_BSQ', max(2, self.hip_bsq)))
+        self.hip_prefill_bk = int(os.getenv('HIP_PREFILL_BK', self.hip_bk))
+        self.hip_prefill_bsk = int(os.getenv('HIP_PREFILL_BSK', self.hip_bsk))
+        
+        self.hip_sw = int(os.getenv('HIP_SW', '256'))
+        self.hip_nsink = int(os.getenv('HIP_NSINK', '16'))
+        
+        self.hip_sample_method = os.getenv('HIP_SAMPLE_METHOD', 'center')
+        
+        self.hip_seq_threshold = int(os.getenv('HIP_SEQ_THRESH', '15000'))
+        
+        self.hip_offload = os.getenv('HIP_OFFLOAD', '0') == '1'
+
+envs = HiPAttentionEnvs()
+
+class RadixAttention(SRTRadixAttention):
     def __init__(
         self,
         num_heads: int,
@@ -42,81 +79,21 @@ class RadixAttention(nn.Module):
         logit_cap: int = -1,
         v_head_dim: int = -1,
     ):
-        super().__init__()
-        self.tp_q_head_num = num_heads
-        self.tp_k_head_num = num_kv_heads
-        self.tp_v_head_num = num_kv_heads
-        self.head_dim = head_dim
-        self.qk_head_dim = head_dim
-        self.v_head_dim = v_head_dim if v_head_dim != -1 else head_dim
-        self.scaling = scaling
-        self.layer_id = layer_id
-        self.sliding_window_size = sliding_window_size if sliding_window_size else -1
-
-        if (
-            not global_server_args_dict.get("disable_flashinfer", False)
-            and self.qk_head_dim == self.v_head_dim
-        ):
-            self.extend_forward = self.extend_forward_flashinfer
-            self.decode_forward = self.decode_forward_flashinfer
-        else:
-            self.extend_forward = self.extend_forward_triton
-            self.decode_forward = self.decode_forward_triton
-
-        self.logit_cap = logit_cap if logit_cap is not None and logit_cap > 0 else 0
-
-    def extend_forward_triton(self, q, k, v, input_metadata: InputMetadata):
-        if self.qk_head_dim != self.v_head_dim:
-            o = q.new_empty((q.shape[0], self.tp_q_head_num * self.v_head_dim))
-        else:
-            o = torch.empty_like(q)
-
-        self.store_kv_cache(k, v, input_metadata)
-        extend_attention_fwd(
-            q.view(-1, self.tp_q_head_num, self.qk_head_dim),
-            k.contiguous(),
-            v.contiguous(),
-            o.view(-1, self.tp_q_head_num, self.v_head_dim),
-            input_metadata.token_to_kv_pool.get_key_buffer(self.layer_id),
-            input_metadata.token_to_kv_pool.get_value_buffer(self.layer_id),
-            input_metadata.req_to_token_pool.req_to_token,
-            input_metadata.req_pool_indices,
-            input_metadata.triton_start_loc,
-            input_metadata.seq_lens,
-            input_metadata.triton_prefix_lens,
-            input_metadata.extend_start_loc,
-            input_metadata.extend_seq_lens,
-            input_metadata.triton_max_seq_len,
-            input_metadata.triton_max_extend_len,
-            sm_scale=self.scaling,
-            logit_cap=self.logit_cap,
+        super().__init__(
+            num_heads=num_heads,
+            head_dim=head_dim,
+            scaling=scaling,
+            num_kv_heads=num_kv_heads,
+            layer_id=layer_id,
+            sliding_window_size=sliding_window_size,
+            logit_cap=logit_cap,
+            v_head_dim=v_head_dim,
         )
-
-        return o
-
-    def decode_forward_triton(self, q, k, v, input_metadata: InputMetadata):
-        if self.qk_head_dim != self.v_head_dim:
-            o = q.new_empty((q.shape[0], self.tp_q_head_num * self.v_head_dim))
-        else:
-            o = torch.empty_like(q)
-        self.store_kv_cache(k, v, input_metadata)
-
-        decode_attention_fwd(
-            q.view(-1, self.tp_q_head_num, self.qk_head_dim),
-            input_metadata.token_to_kv_pool.get_key_buffer(self.layer_id),
-            input_metadata.token_to_kv_pool.get_value_buffer(self.layer_id),
-            o.view(-1, self.tp_q_head_num, self.v_head_dim),
-            input_metadata.req_to_token_pool.req_to_token,
-            input_metadata.req_pool_indices,
-            input_metadata.triton_start_loc,
-            input_metadata.seq_lens,
-            input_metadata.triton_max_seq_len,
-            input_metadata.total_num_tokens,
-            sm_scale=self.scaling,
-            logit_cap=self.logit_cap,
-        )
-
-        return o
+        
+        self.checkout_metadata = False
+        self.last_metadata = None
+        self.using_cached_metadata = False
+        self.cached_metadata = None
 
     def extend_forward_flashinfer(self, q, k, v, input_metadata: InputMetadata):
         # using two wrappers is unnecessary in the current PR, but are prepared for future PRs
@@ -186,15 +163,8 @@ class RadixAttention(nn.Module):
 
         query = q.contiguous().view(-1, self.tp_q_head_num, self.head_dim)
         k_cache, v_cache = input_metadata.token_to_kv_pool.get_kv_buffer(self.layer_id)
-        # print(
-        #     query.shape, k_cache.shape, v_cache.shape, 
-        #     input_metadata.positions.shape,                         # (bsz,) == position_ids
-        #     input_metadata.seq_lens.shape,                          # (bsz,) == cache_seq_lens
-        #     input_metadata.req_to_token_pool.req_to_token.shape,    # (n_pools, model_seq_len)  +|
-        #     input_metadata.req_pool_indices.shape,                  # (bsz, ) bsz-> idx_pools   +|=> block_tables
-        # )
 
-        if self.layer_id < int(os.getenv('HIP_NUM_DENSE_LAYERS', '4')):
+        if self.layer_id in envs.hip_dense_layers:
             o = decode_wrapper.forward(
                 query,
                 (k_cache, v_cache),
@@ -203,6 +173,10 @@ class RadixAttention(nn.Module):
             )
         else:
             warnings.warn('HiP attention is used in decoding!')
+            metadata = None
+            if self.using_cached_metadata:
+                metadata = self.cached_metadata
+            
             o, metadata = decode_forward_hip(
                 query, 
                 k_cache, 
@@ -212,26 +186,13 @@ class RadixAttention(nn.Module):
                 input_metadata.req_to_token_pool.req_to_token,
                 input_metadata.req_pool_indices,
                 self.scaling,
+                cached_metadata=metadata,
             )
+            
+            if self.checkout_metadata:
+                self.last_metadata = metadata
 
         return o.view(-1, self.tp_q_head_num * self.head_dim)
-
-    def forward(self, q, k, v, input_metadata: InputMetadata):
-        if k is not None:
-            assert v is not None
-            k = k.view(-1, self.tp_k_head_num, self.qk_head_dim)
-            v = v.view(-1, self.tp_v_head_num, self.v_head_dim)
-
-        if input_metadata.forward_mode == ForwardMode.EXTEND:
-            return self.extend_forward(q, k, v, input_metadata)
-        elif input_metadata.forward_mode == ForwardMode.DECODE:
-            return self.decode_forward(q, k, v, input_metadata)
-
-    def store_kv_cache(self, cache_k, cache_v, input_metadata: InputMetadata):
-        input_metadata.token_to_kv_pool.set_kv_buffer(
-            self.layer_id, input_metadata.out_cache_loc, cache_k, cache_v
-        )
-
 
 def decode_forward_hip(
     query: torch.Tensor, 
@@ -242,6 +203,7 @@ def decode_forward_hip(
     req_to_tokens: torch.Tensor,
     req_pool_indices: torch.Tensor,
     sm_scale: float,
+    cached_metadata = None,
 ):
     from hip import paged_hip_attention, HiPAttentionArgs
     
@@ -273,6 +235,7 @@ def decode_forward_hip(
     
     context, metadata = paged_hip_attention(
         query,
+        previous_mask_metadata=cached_metadata,
         softmax_scale=sm_scale,
         args=args,
     )
