@@ -34,6 +34,7 @@ class HiPGraphRunner:
         
         self.step = 0
         self.refresh_interval = 8
+        self.pool = None
     
     def can_run(self, batch_size: int):
         return batch_size in self.batch_sizes
@@ -62,6 +63,7 @@ class HiPGraphRunner:
                     module.using_cached_metadata = False
                     module.cached_metadata = None
             
+            runner_refresh.graph_memory_pool = self.pool
             runner_refresh.capture([bsz])
             
             for module in self.model_runner.model.modules():
@@ -73,6 +75,7 @@ class HiPGraphRunner:
             
             runner_cached.graph_memory_pool = runner_refresh.graph_memory_pool
             runner_cached.capture([bsz])
+            self.pool = runner_cached.graph_memory_pool
             
             for module in self.model_runner.model.modules():
                 if isinstance(module, RadixAttention):
