@@ -21,23 +21,20 @@ class HiPGraphRunner:
         self.disable_padding = disable_padding
         self.batch_sizes = []
         
-        self.runner_refresh = {} 
-        # 
+        print('hipgraphrunner', max_batch_size_to_capture, use_torch_compile, disable_padding)
         
-        self.runner_cached = {} 
-        # CudaGraphRunner(
-        #     self.model_runner, 
-        #     max_batch_size_to_capture=max_batch_size_to_capture,
-        #     use_torch_compile=use_torch_compile,
-        #     disable_padding=disable_padding,
-        # )
+        self.runner_refresh = {}
+        self.runner_cached = {}
         
         self.step = 0
         self.refresh_interval = 8
         self.pool = None
     
     def can_run(self, batch_size: int):
-        return batch_size in self.batch_sizes
+        if self.disable_padding:
+            return batch_size in self.batch_sizes
+        else:
+            return batch_size <= self.max_batch_to_capture
     
     def capture_runners(self, batch_size_list: List[int]):
         self.batch_sizes = batch_size_list
@@ -104,9 +101,19 @@ class HiPGraphRunner:
         self.step = 0
     
     def replay(self, batch: ScheduleBatch):
+        def get_graph(graphs):
+            if self.disable_padding:
+                return graphs[batch.batch_size()]
+            else:
+                graph = None
+                for bsz in graphs:
+                    if bsz >= batch.batch_size():
+                        graph = graphs[bsz]
+                return graph
+        
         if (self.step % self.refresh_interval) == 0:
-            out = self.runner_refresh[batch.batch_size()].replay(batch)
+            out = get_graph(self.runner_refresh).replay(batch)
         else:
-            out = self.runner_cached[batch.batch_size()].replay(batch)
+            out = get_graph(self.runner_cached).replay(batch)
         self.step += 1
         return out
