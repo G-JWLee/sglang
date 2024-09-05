@@ -37,13 +37,14 @@ class HiPAttentionEnvs:
         self.hip_dense_layers = os.getenv('HIP_DENSE_LAYERS', '0,1,2')
         try:
             t = int(self.hip_dense_layers)
+            self.hip_dense_layers = list(range(t))
             warnings.warn(
                 'You gave single integer for hip dense layers. '
                 'From HiP 1.1, this changed into list of integers, e.g., `0,1,2` '
                 'Are you sure about this?'
             )
-        except: pass
-        self.hip_dense_layers = [int(i) for i in self.hip_dense_layers.split(',')]
+        except: 
+            self.hip_dense_layers = [int(i) for i in self.hip_dense_layers.split(',')]
         
         self.hip_k = int(os.getenv('HIP_K', '512'))
         self.hip_bq = int(os.getenv('HIP_BQ', '32'))
@@ -64,6 +65,34 @@ class HiPAttentionEnvs:
         self.hip_seq_threshold = int(os.getenv('HIP_SEQ_THRESH', '15000'))
         
         self.hip_offload = os.getenv('HIP_OFFLOAD', '0') == '1'
+        
+        print(self.decode_config())
+        print(self.prefill_config())
+        print(self.hip_dense_layers)
+    
+    def decode_config(self):
+        hip_kwargs = {
+            'mask_k': self.hip_k,
+            'block_size_q': self.hip_bq,
+            'block_stride_q': self.hip_bsq,
+            'block_size_k': self.hip_bk,
+            'block_stride_k': self.hip_bsk,
+            'sample_method': self.hip_sample_method,
+            'sliding_window_size': self.hip_sw,
+            'sink_token_size': self.hip_nsink,
+        }
+        return hip_kwargs
+    
+    def prefill_config(self):
+        hip_prefill_kwargs = self.decode_config()
+        hip_prefill_kwargs.update({
+            'block_size_q': self.hip_prefill_bq,
+            'block_stride_q': self.hip_prefill_bsq,
+            'block_size_k': self.hip_prefill_bk,
+            'block_stride_k': self.hip_prefill_bsk,
+            'num_dense_queries': self.hip_seq_threshold,
+        })
+        return hip_prefill_kwargs
 
 envs = HiPAttentionEnvs()
 
@@ -231,6 +260,7 @@ def decode_forward_hip(
         block_table=block_table,
         cache_seq_lens=cache_seq_lens,
         position_ids=position_ids,
+        **envs.decode_config(),
     )
     
     context, metadata = paged_hip_attention(

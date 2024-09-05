@@ -12,16 +12,14 @@ class HiPGraphRunner:
         self,
         model_runner: "ModelRunner",
         max_batch_size_to_capture: int,
-        use_torch_compile: bool,
-        disable_padding: bool,
+        use_torch_compile: bool, # False
+        disable_padding: bool, # False
     ):
         self.model_runner = model_runner
         self.max_batch_to_capture = max_batch_size_to_capture
         self.use_torch_compile = use_torch_compile
         self.disable_padding = disable_padding
         self.batch_sizes = []
-        
-        print('hipgraphrunner', max_batch_size_to_capture, use_torch_compile, disable_padding)
         
         self.runner_refresh = {}
         self.runner_cached = {}
@@ -39,7 +37,7 @@ class HiPGraphRunner:
     def capture_runners(self, batch_size_list: List[int]):
         self.batch_sizes = batch_size_list
         
-        for bsz in batch_size_list:
+        for bsz in list(reversed(batch_size_list)):
             runner_refresh = CudaGraphRunner(
                 self.model_runner, 
                 max_batch_size_to_capture=bsz,
