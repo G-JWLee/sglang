@@ -31,6 +31,8 @@ from sglang.srt.model_executor.model_runner import global_server_args_dict
 
 from .radix_attention import RadixAttention as SRTRadixAttention
 
+from hip import paged_hip_attention, HiPAttentionArgs
+
 class HiPAttentionEnvs:
     def __init__(self):
         self.refresh_interval = int(os.getenv('HIP_REFRESH_INTERVAL', '8'))
@@ -47,13 +49,14 @@ class HiPAttentionEnvs:
             self.hip_dense_layers = [int(i) for i in self.hip_dense_layers.split(',')]
         
         self.hip_k = int(os.getenv('HIP_K', '512'))
-        self.hip_bq = int(os.getenv('HIP_BQ', '32'))
-        self.hip_bsq = int(os.getenv('HIP_BSK', '1'))
+        self.hip_bq = int(os.getenv('HIP_BQ', '64'))
+        self.hip_bsq = int(os.getenv('HIP_BSQ', '2'))
         self.hip_bk = int(os.getenv('HIP_BK', '2'))
         self.hip_bsk = int(os.getenv('HIP_BSK', '1'))
         
+        self.hip_prefill_k = int(os.getenv('HIP_PREFILL_K', self.hip_k))
         self.hip_prefill_bq = int(os.getenv('HIP_PREFILL_BQ', self.hip_bq))
-        self.hip_prefill_bsq = int(os.getenv('HIP_PREFILL_BSQ', max(2, self.hip_bsq)))
+        self.hip_prefill_bsq = int(os.getenv('HIP_PREFILL_BSQ', self.hip_bsq))
         self.hip_prefill_bk = int(os.getenv('HIP_PREFILL_BK', self.hip_bk))
         self.hip_prefill_bsk = int(os.getenv('HIP_PREFILL_BSK', self.hip_bsk))
         
@@ -86,6 +89,7 @@ class HiPAttentionEnvs:
     def prefill_config(self):
         hip_prefill_kwargs = self.decode_config()
         hip_prefill_kwargs.update({
+            'mask_k': self.hip_prefill_k,
             'block_size_q': self.hip_prefill_bq,
             'block_stride_q': self.hip_prefill_bsq,
             'block_size_k': self.hip_prefill_bk,
@@ -147,34 +151,63 @@ class RadixAttention(SRTRadixAttention):
                 logits_soft_cap=self.logit_cap,
             )
         else:
-            o1, s1 = (
-                input_metadata.flashinfer_prefill_wrapper_ragged.forward_return_lse(
-                    q.contiguous().view(-1, self.tp_q_head_num, self.head_dim),
-                    k.contiguous().view(-1, self.tp_k_head_num, self.head_dim),
-                    v.contiguous().view(-1, self.tp_v_head_num, self.head_dim),
-                    causal=True,
-                    sm_scale=self.scaling,
-                    logits_soft_cap=self.logit_cap,
+            if input_metadata.triton_max_seq_len == 0:
+                input_metadata.triton_max_seq_len = torch.max(input_metadata.seq_lens).item()
+            
+            # start = torch.cuda.Event(True)
+            # start.record()
+            
+            if  (self.layer_id in envs.hip_dense_layers) or\
+                (input_metadata.batch_size > 1) or\
+                (input_metadata.triton_max_seq_len < (40 * 1024)):
+                o1, s1 = (
+                    input_metadata.flashinfer_prefill_wrapper_ragged.forward_return_lse(
+                        q.contiguous().view(-1, self.tp_q_head_num, self.head_dim),
+                        k.contiguous().view(-1, self.tp_k_head_num, self.head_dim),
+                        v.contiguous().view(-1, self.tp_v_head_num, self.head_dim),
+                        causal=True,
+                        sm_scale=self.scaling,
+                        logits_soft_cap=self.logit_cap,
+                    )
                 )
-            )
 
-            if input_metadata.extend_no_prefix:
-                o = o1
+                if input_metadata.extend_no_prefix:
+                    o = o1
+                else:
+                    o2, s2 = prefill_wrapper_paged.forward_return_lse(
+                        q.contiguous().view(-1, self.tp_q_head_num, self.head_dim),
+                        input_metadata.token_to_kv_pool.get_kv_buffer(self.layer_id),
+                        causal=False,
+                        sm_scale=self.scaling,
+                        logits_soft_cap=self.logit_cap,
+                    )
+
+                    o, _ = merge_state(o1, s1, o2, s2)
+
+                self.store_kv_cache(k, v, input_metadata)
             else:
-                o2, s2 = prefill_wrapper_paged.forward_return_lse(
+                k_cache, v_cache = input_metadata.token_to_kv_pool.get_kv_buffer(self.layer_id)
+                
+                o, _ = decode_forward_hip(
                     q.contiguous().view(-1, self.tp_q_head_num, self.head_dim),
-                    input_metadata.token_to_kv_pool.get_kv_buffer(self.layer_id),
-                    causal=False,
-                    sm_scale=self.scaling,
-                    logits_soft_cap=self.logit_cap,
+                    k_cache, 
+                    v_cache,
+                    input_metadata.positions,
+                    input_metadata.seq_lens,
+                    input_metadata.req_to_token_pool.req_to_token,
+                    input_metadata.req_pool_indices,
+                    self.scaling,
+                    input_metadata.batch_size,
                 )
-
-                o, _ = merge_state(o1, s1, o2, s2)
-
-            self.store_kv_cache(k, v, input_metadata)
-
+            
+            # end = torch.cuda.Event(True)
+            # end.record()
+            
             if input_metadata.total_num_tokens >= global_config.layer_sync_threshold:
                 torch.cuda.synchronize()
+            
+            # end.synchronize()
+            # print(start.elapsed_time(end), input_metadata.triton_max_seq_len)
 
         return o.view(-1, self.tp_q_head_num * self.head_dim)
 
@@ -215,6 +248,7 @@ class RadixAttention(SRTRadixAttention):
                 input_metadata.req_to_token_pool.req_to_token,
                 input_metadata.req_pool_indices,
                 self.scaling,
+                input_metadata.batch_size,
                 cached_metadata=metadata,
             )
             
@@ -232,12 +266,12 @@ def decode_forward_hip(
     req_to_tokens: torch.Tensor,
     req_pool_indices: torch.Tensor,
     sm_scale: float,
+    batch_size: int,
     cached_metadata = None,
 ):
-    from hip import paged_hip_attention, HiPAttentionArgs
-    
-    BSZ, HEAD, HID = query.shape
-    query = query.view(BSZ, 1, HEAD, HID)
+    N, HEAD, HID = query.shape
+    TDST = N // batch_size
+    query = query.view(batch_size, -1, HEAD, HID)
     
     N_PAGE, HEAD_KV, _HID = k_cache.shape
     assert v_cache.shape == k_cache.shape
@@ -249,10 +283,10 @@ def decode_forward_hip(
         dim=0, index=req_pool_indices
     )
     _BSZ, MODEL_SEQ_LEN = block_table.shape
-    assert BSZ == _BSZ
+    assert batch_size == _BSZ
     
     cache_seq_lens = seq_lens
-    position_ids = positions.unsqueeze(-1)
+    position_ids = positions.unsqueeze(-1).expand(-1, TDST)
     
     args = HiPAttentionArgs(
         k_cache=k_cache,
@@ -270,4 +304,4 @@ def decode_forward_hip(
         args=args,
     )
     
-    return context.view(BSZ, HEAD, HID), metadata
+    return context.view(N, HEAD, HID), metadata
