@@ -159,7 +159,10 @@ class RadixAttention(SRTRadixAttention):
             
             if  (self.layer_id in envs.hip_dense_layers) or\
                 (input_metadata.batch_size > 1) or\
-                (input_metadata.triton_max_seq_len < (40 * 1024)):
+                (
+                    (input_metadata.triton_max_seq_len < (20 * 1024)) or\
+                    (q.shape[0] < 512)
+                ):
                 o1, s1 = (
                     input_metadata.flashinfer_prefill_wrapper_ragged.forward_return_lse(
                         q.contiguous().view(-1, self.tp_q_head_num, self.head_dim),
