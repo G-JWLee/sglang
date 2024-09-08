@@ -25,8 +25,8 @@ class GlobalConfig:
         self.layer_sync_threshold = 8192
 
         # Runtime constants: others
-        self.num_continue_decode_steps = 10
-        self.retract_decode_steps = 20
+        self.num_continue_decode_steps = 64
+        self.retract_decode_steps = 128
         self.flashinfer_workspace_size = 384 * 1024 * 1024
 
         # Output tokenization configs

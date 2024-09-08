@@ -15,6 +15,7 @@ limitations under the License.
 
 """ModelRunner runs the forward passes of the models."""
 
+import nvtx
 import gc
 import importlib
 import importlib.resources
@@ -581,7 +582,8 @@ class ModelRunner:
             input_metadata.image_sizes,
             input_metadata.image_offsets,
         )
-
+    
+    @nvtx.annotate('ModelRunner.forward')
     def forward(
         self, batch: ScheduleBatch, forward_mode: ForwardMode
     ) -> Tuple[SampleOutput, LogitsProcessorOutput]:

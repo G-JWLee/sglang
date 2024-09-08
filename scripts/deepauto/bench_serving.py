@@ -409,7 +409,7 @@ def sample_random_requests(
         size=num_prompts,
     )
 
-    if True:
+    if os.getenv('PURE_RANDOM', '0') == '0':
         # Sample token ids from ShareGPT and repeat/truncate them to satisfy the input_lens
 
         # Download sharegpt if necessary
@@ -596,6 +596,9 @@ async def benchmark(
     pbar = None if disable_tqdm else tqdm(total=len(input_requests))
 
     benchmark_start_time = time.perf_counter()
+    print('#'*80)
+    print(''*20, 'BENCHMARK TIMER STARTED!', benchmark_start_time, time.time())
+    print('#'*80)
     tasks: List[asyncio.Task] = []
     async for request in get_request(input_requests, request_rate):
         prompt, prompt_len, output_len = request

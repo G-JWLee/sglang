@@ -16,6 +16,7 @@ limitations under the License.
 """Radix attention."""
 
 import os
+import time
 from typing import Optional
 import warnings
 
@@ -41,7 +42,7 @@ class HiPAttentionEnvs:
             t = int(self.hip_dense_layers)
             self.hip_dense_layers = list(range(t))
             warnings.warn(
-                'You gave single integer for hip dense layers. '
+                f'You gave single integer ({t}) for hip dense layers. '
                 'From HiP 1.1, this changed into list of integers, e.g., `0,1,2` '
                 'Are you sure about this?'
             )
@@ -152,7 +153,10 @@ class RadixAttention(SRTRadixAttention):
             )
         else:
             if input_metadata.triton_max_seq_len == 0:
+                t_start = time.time()
                 input_metadata.triton_max_seq_len = torch.max(input_metadata.seq_lens).item()
+                elapsed_item = time.time() - t_start
+                print(f'RadixAttention: Seq len calculated {input_metadata.triton_max_seq_len}, took {elapsed_item} ms')
             
             # start = torch.cuda.Event(True)
             # start.record()
@@ -190,6 +194,8 @@ class RadixAttention(SRTRadixAttention):
                 self.store_kv_cache(k, v, input_metadata)
             else:
                 k_cache, v_cache = input_metadata.token_to_kv_pool.get_kv_buffer(self.layer_id)
+                
+                # o = torch.zeros_like(q.contiguous().view(-1, self.tp_q_head_num, self.head_dim))
                 
                 o, _ = decode_forward_hip(
                     q.contiguous().view(-1, self.tp_q_head_num, self.head_dim),

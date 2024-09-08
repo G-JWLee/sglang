@@ -52,7 +52,7 @@ class ServerArgs:
     max_num_reqs: Optional[int] = None
     max_total_tokens: Optional[int] = None
     chunked_prefill_size: int = 8192
-    max_prefill_tokens: int = 16384
+    max_prefill_tokens: int = 8192
     schedule_policy: str = "lpm"
     schedule_conservativeness: float = 1.0
 

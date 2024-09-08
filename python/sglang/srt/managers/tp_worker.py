@@ -15,6 +15,7 @@ limitations under the License.
 
 """A tensor parallel worker."""
 
+import nvtx
 import logging
 import multiprocessing
 import os
@@ -251,9 +252,15 @@ class ModelTpServer:
         self.out_pyobjs = []
         return ret
 
+    @nvtx.annotate('ModelTpServer.forward_step')
     @torch.inference_mode()
     def forward_step(self):
+        time_start = time.time()
+        
+        # NOTE(HJ): took 10 ms
         new_batch = self.get_new_prefill_batch()
+
+        time_start_forward = time.time()
 
         if new_batch is not None:
             # Run a new prefill batch
@@ -285,6 +292,14 @@ class ModelTpServer:
             else:
                 self.check_memory()
                 self.new_token_ratio = global_config.init_new_token_ratio
+        
+        time_end = time.time()
+        
+        elapsed = time_end - time_start
+        elapsed_forward = time_end - time_start_forward
+        
+        if elapsed > 3e-4: # exceed 3 ms, to prevent too verbose message
+            print('ModelTpServer:', time.time(), elapsed, elapsed_forward)
 
     def print_decode_stats(self):
         num_used = self.max_total_num_tokens - (
