@@ -66,7 +66,7 @@ class HiPAttentionEnvs:
         
         self.hip_sample_method = os.getenv('HIP_SAMPLE_METHOD', 'center')
         
-        self.hip_seq_threshold = int(os.getenv('HIP_SEQ_THRESH', '15000'))
+        self.hip_seq_threshold = int(os.getenv('HIP_SEQ_THRESH', '-1'))
         
         self.hip_offload = os.getenv('HIP_OFFLOAD', '0') == '1'
         
@@ -193,11 +193,11 @@ class RadixAttention(SRTRadixAttention):
 
                 self.store_kv_cache(k, v, input_metadata)
             else:
+                warnings.warn('HiP attention is used in prompting!', stacklevel=0)
+                
                 k_cache, v_cache = input_metadata.token_to_kv_pool.get_kv_buffer(self.layer_id)
                 
-                # o = torch.zeros_like(q.contiguous().view(-1, self.tp_q_head_num, self.head_dim))
-                
-                o, _ = decode_forward_hip(
+                o, _ = forward_paged_hip(
                     q.contiguous().view(-1, self.tp_q_head_num, self.head_dim),
                     k_cache, 
                     v_cache,
@@ -207,6 +207,7 @@ class RadixAttention(SRTRadixAttention):
                     input_metadata.req_pool_indices,
                     self.scaling,
                     input_metadata.batch_size,
+                    is_prefill=True,
                 )
             
             # end = torch.cuda.Event(True)
@@ -243,12 +244,12 @@ class RadixAttention(SRTRadixAttention):
                 logits_soft_cap=self.logit_cap,
             )
         else:
-            warnings.warn('HiP attention is used in decoding!')
+            warnings.warn('HiP attention is used in decoding!', stacklevel=0)
             metadata = None
             if self.using_cached_metadata:
                 metadata = self.cached_metadata
             
-            o, metadata = decode_forward_hip(
+            o, metadata = forward_paged_hip(
                 query, 
                 k_cache, 
                 v_cache, 
@@ -266,7 +267,7 @@ class RadixAttention(SRTRadixAttention):
 
         return o.view(-1, self.tp_q_head_num * self.head_dim)
 
-def decode_forward_hip(
+def forward_paged_hip(
     query: torch.Tensor, 
     k_cache: torch.Tensor, 
     v_cache: torch.Tensor,
@@ -277,10 +278,11 @@ def decode_forward_hip(
     sm_scale: float,
     batch_size: int,
     cached_metadata = None,
+    is_prefill: bool = False,
 ):
     N, HEAD, HID = query.shape
     TDST = N // batch_size
-    query = query.view(batch_size, -1, HEAD, HID)
+    query = query.view(batch_size, TDST, HEAD, HID)
     
     N_PAGE, HEAD_KV, _HID = k_cache.shape
     assert v_cache.shape == k_cache.shape
@@ -295,7 +297,7 @@ def decode_forward_hip(
     assert batch_size == _BSZ
     
     cache_seq_lens = seq_lens
-    position_ids = positions.unsqueeze(-1).expand(-1, TDST)
+    position_ids = positions.view(batch_size, TDST) + 1 # BUG(HJ): this naming is wrong... this should be key_seq_lens
     
     args = HiPAttentionArgs(
         k_cache=k_cache,
@@ -303,7 +305,7 @@ def decode_forward_hip(
         block_table=block_table,
         cache_seq_lens=cache_seq_lens,
         position_ids=position_ids,
-        **envs.decode_config(),
+        **(envs.decode_config() if not is_prefill else envs.prefill_config()),
     )
     
     context, metadata = paged_hip_attention(
