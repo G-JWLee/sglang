@@ -18,6 +18,7 @@ limitations under the License.
 import bisect
 from contextlib import contextmanager
 from typing import Callable, List
+import gc
 
 import torch
 from flashinfer import BatchDecodeWithPagedKVCacheWrapper
@@ -277,6 +278,7 @@ class CudaGraphRunner:
         self.model_runner.tp_group.barrier()
 
         self.graph_memory_pool = graph.pool()
+
         return graph, None, out, flashinfer_decode_wrapper
 
     def replay(self, batch: ScheduleBatch):
