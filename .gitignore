@@ -185,3 +185,5 @@ work_dirs/
 !logo.png
 cache/
 saves/
+*.nsys-rep
+*.ncu-rep
