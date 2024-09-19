@@ -257,7 +257,7 @@ class ModelTpServer:
     def forward_step(self):
         time_start = time.time()
         
-        # NOTE(HJ): took 10 ms
+        # NOTE(-): took 10 ms
         new_batch = self.get_new_prefill_batch()
 
         time_start_forward = time.time()

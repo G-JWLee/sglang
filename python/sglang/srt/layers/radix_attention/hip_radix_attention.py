@@ -297,7 +297,7 @@ def forward_paged_hip(
     assert batch_size == _BSZ
     
     cache_seq_lens = seq_lens
-    position_ids = positions.view(batch_size, TDST) + 1 # BUG(HJ): this naming is wrong... this should be key_seq_lens
+    position_ids = positions.view(batch_size, TDST) + 1 # BUG(-): this naming is wrong... this should be key_seq_lens
     
     args = HiPAttentionArgs(
         k_cache=k_cache,
