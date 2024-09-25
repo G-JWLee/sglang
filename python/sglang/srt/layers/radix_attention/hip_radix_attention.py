@@ -70,9 +70,13 @@ class HiPAttentionEnvs:
         
         self.hip_offload = os.getenv('HIP_OFFLOAD', '0') == '1'
         
+        self.hip_decode_always_dense = os.getenv('HIP_DECODE_ALWAYS_DENSE', '0') == '1'
+        self.hip_prefill_always_dense = os.getenv('HIP_PREFILL_ALWAYS_DENSE', '0') == '1'
+        
         print(self.decode_config())
         print(self.prefill_config())
-        print(self.hip_dense_layers)
+        print('dense layers =', self.hip_dense_layers)
+        print(f'is decode dense? = {self.hip_decode_always_dense}, is prefill dense? = {self.hip_prefill_always_dense}')
     
     def decode_config(self):
         hip_kwargs = {
@@ -162,6 +166,7 @@ class RadixAttention(SRTRadixAttention):
             # start.record()
             
             if  (self.layer_id in envs.hip_dense_layers) or\
+                envs.hip_prefill_always_dense or\
                 (input_metadata.batch_size > 1) or\
                 (
                     (input_metadata.triton_max_seq_len < (20 * 1024)) or\
@@ -236,7 +241,8 @@ class RadixAttention(SRTRadixAttention):
         query = q.contiguous().view(-1, self.tp_q_head_num, self.head_dim)
         k_cache, v_cache = input_metadata.token_to_kv_pool.get_kv_buffer(self.layer_id)
 
-        if self.layer_id in envs.hip_dense_layers:
+        if  (self.layer_id in envs.hip_dense_layers) or\
+            envs.hip_decode_always_dense:
             o = decode_wrapper.forward(
                 query,
                 (k_cache, v_cache),
