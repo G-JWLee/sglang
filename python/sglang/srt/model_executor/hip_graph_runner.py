@@ -137,7 +137,7 @@ class HiPGraphRunner:
         
         mean_seq_len = sum(map(lambda req: len(req.prefix_indices), batch.reqs)) / len(batch.reqs)
         
-        if mean_seq_len <= hip_envs.hip_decode_dense_threshold and False:
+        if mean_seq_len <= hip_envs.hip_decode_dense_threshold:
             out = get_graph(self.runner_dense).replay(batch)
         elif (self.step % self.refresh_interval) == 0:
             out = get_graph(self.runner_refresh).replay(batch)
