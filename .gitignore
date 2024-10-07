@@ -187,3 +187,5 @@ cache/
 saves/
 *.nsys-rep
 *.ncu-rep
+
+output*.txt

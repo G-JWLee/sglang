@@ -503,7 +503,7 @@ class ModelRunner:
             self.cuda_graph_runner = None
             return
 
-        logger.info("Capture cuda graph begin. This can take up to several minutes.")
+        logger.info("Capture cuda graph begin. This can take up to several minutes. Consider to set SRT_MAX_BATCH")
 
         if self.server_args.disable_cuda_graph_padding:
             batch_size_list = list(range(1, 32)) + [64, 128]

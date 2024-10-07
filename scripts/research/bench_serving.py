@@ -282,6 +282,7 @@ class BenchmarkMetrics:
     request_throughput: float
     input_throughput: float
     output_throughput: float
+    io_throughput: float
     output_throughput_retokenized: float
     mean_ttft_ms: float
     median_ttft_ms: float
@@ -536,24 +537,24 @@ def calculate_metrics(
         total_output=sum(output_lens),
         total_output_retokenized=sum(retokenized_output_lens),
         request_throughput=completed / dur_s,
+        io_throughput=(total_input + sum(output_lens)) / dur_s,
         input_throughput=total_input / dur_s,
         output_throughput=sum(output_lens) / dur_s,
         output_throughput_retokenized=sum(retokenized_output_lens) / dur_s,
-        mean_ttft_ms=np.mean(ttfts or 0)
-        * 1000,  # ttfts is empty if streaming is not supported by backend
-        median_ttft_ms=np.median(ttfts or 0) * 1000,
-        std_ttft_ms=np.std(ttfts or 0) * 1000,
-        p99_ttft_ms=np.percentile(ttfts or 0, 99) * 1000,
-        mean_tpot_ms=np.mean(tpots or 0) * 1000,
-        median_tpot_ms=np.median(tpots or 0) * 1000,
-        std_tpot_ms=np.std(tpots or 0) * 1000,
-        p99_tpot_ms=np.percentile(tpots or 0, 99) * 1000,
-        mean_itl_ms=np.mean(itls or 0) * 1000,
-        median_itl_ms=np.median(itls or 0) * 1000,
-        std_itl_ms=np.std(itls or 0) * 1000,
-        p99_itl_ms=np.percentile(itls or 0, 99) * 1000,
-        mean_e2e_latency_ms=np.mean(e2e_latencies) * 1000,
-        median_e2e_latency_ms=np.median(e2e_latencies) * 1000,
+        mean_ttft_ms=np.mean(ttfts or 0).item() * 1000,  # ttfts is empty if streaming is not supported by backend
+        median_ttft_ms=np.median(ttfts or 0).item() * 1000,
+        std_ttft_ms=np.std(ttfts or 0).item() * 1000,
+        p99_ttft_ms=np.percentile(ttfts or 0, 99).item() * 1000,
+        mean_tpot_ms=np.mean(tpots or 0).item() * 1000,
+        median_tpot_ms=np.median(tpots or 0).item() * 1000,
+        std_tpot_ms=np.std(tpots or 0).item() * 1000,
+        p99_tpot_ms=np.percentile(tpots or 0, 99).item() * 1000,
+        mean_itl_ms=np.mean(itls or 0).item() * 1000,
+        median_itl_ms=np.median(itls or 0).item() * 1000,
+        std_itl_ms=np.std(itls or 0).item() * 1000,
+        p99_itl_ms=np.percentile(itls or 0, 99).item() * 1000,
+        mean_e2e_latency_ms=np.mean(e2e_latencies).item() * 1000,
+        median_e2e_latency_ms=np.median(e2e_latencies).item() * 1000,
     )
 
     return metrics, output_lens
@@ -655,6 +656,11 @@ async def benchmark(
     print(
         "{:<40} {:<10.2f}".format(
             "Output token throughput (tok/s):", metrics.output_throughput
+        )
+    )
+    print(
+        "{:<40} {:<10.2f}".format(
+            "IO token throughput (tok/s):", metrics.io_throughput
         )
     )
     print("{s:{c}^{n}}".format(s="End-to-End Latency", n=50, c="-"))

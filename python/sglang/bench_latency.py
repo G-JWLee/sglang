@@ -50,7 +50,7 @@ import multiprocessing
 import os
 import sqlite3
 import time
-from typing import Tuple
+from typing import List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -65,6 +65,7 @@ from sglang.srt.model_executor.model_runner import ModelRunner
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import suppress_other_loggers
+import tqdm
 
 
 @dataclasses.dataclass
@@ -200,20 +201,33 @@ def prepare_synthetic_inputs_for_latency_test(batch_size, input_len):
     return reqs
 
 
-def extend(reqs, model_runner):
-    batch = ScheduleBatch.init_new(
-        reqs=reqs,
-        req_to_token_pool=model_runner.req_to_token_pool,
-        token_to_kv_pool=model_runner.token_to_kv_pool,
-        tree_cache=None,
-    )
-    batch.prepare_for_extend(model_runner.model_config.vocab_size)
-    sample_output, logits_output = model_runner.forward(batch, ForwardMode.EXTEND)
-    next_token_ids = sample_output.batch_next_token_ids.tolist()
+def extend(server_args: ServerArgs, reqs: List[Req], model_runner):
+    batch_size = len(reqs)
+    seq_len = len(reqs[0].fill_ids)
+    chunked_prefill_size = server_args.chunked_prefill_size // batch_size
+    if chunked_prefill_size < 0:
+        chunked_prefill_size = seq_len
+    for i in tqdm.tqdm(range(0, seq_len, chunked_prefill_size), desc='chunked prefill', leave=False, delay=3, dynamic_ncols=True):
+        def chunked_req(req: Req, i: int):
+            r = Req(req.rid, req.origin_input_ids, req.origin_input_ids)
+            r.sampling_params = req.sampling_params
+            r.fill_ids = req.origin_input_ids[:i+chunked_prefill_size]
+            r.prefix_indices = torch.tensor(r.fill_ids[:i])
+            assert len(r.fill_ids) > len(r.prefix_indices)
+            return r
+        batch = ScheduleBatch.init_new(
+            reqs=[chunked_req(req, i) for req in reqs],
+            req_to_token_pool=model_runner.req_to_token_pool,
+            token_to_kv_pool=model_runner.token_to_kv_pool,
+            tree_cache=None,
+        )
+        batch.prepare_for_extend(model_runner.model_config.vocab_size)
+        sample_output, logits_output = model_runner.forward(batch, ForwardMode.EXTEND)
+        next_token_ids = sample_output.batch_next_token_ids.tolist()
     return next_token_ids, logits_output.next_token_logits, batch
 
 
-def decode(input_token_ids, batch, model_runner):
+def decode(input_token_ids: List[int], batch: ScheduleBatch, model_runner):
     batch.prepare_for_decode(input_token_ids)
     sample_output, logits_output = model_runner.forward(batch, ForwardMode.DECODE)
     next_token_ids = sample_output.batch_next_token_ids.tolist()
@@ -264,7 +278,14 @@ def correctness_test(
 
 @torch.inference_mode()
 def latency_test_run_once(
-    run_name, model_runner, rank_print, reqs, batch_size, input_len, output_len
+    run_name, 
+    model_runner, 
+    rank_print, 
+    reqs, 
+    batch_size, 
+    input_len, 
+    output_len,
+    server_args: ServerArgs,
 ):
     max_batch_size = model_runner.max_total_num_tokens // (input_len + output_len)
     if batch_size > max_batch_size:
@@ -289,7 +310,7 @@ def latency_test_run_once(
     # Prefill
     torch.cuda.synchronize()
     tic = time.time()
-    next_token_ids, _, batch = extend(reqs, model_runner)
+    next_token_ids, _, batch = extend(server_args, reqs, model_runner)
     torch.cuda.synchronize()
     prefill_latency = time.time() - tic
     tot_latency += prefill_latency
@@ -311,14 +332,19 @@ def latency_test_run_once(
         tot_latency += latency
         throughput = batch_size / latency
         decode_latencies.append(latency)
-        if i < 5:
+        if i < 16:
             rank_print(
                 f"Decode.  latency: {latency:6.5f} s, throughput: {throughput:9.2f} token/s"
             )
     med_decode_latency = np.median(decode_latencies)
     med_decode_throughput = batch_size / med_decode_latency
+    mean_decode_latency = np.average(decode_latencies)
+    mean_decode_throughput = batch_size / mean_decode_latency
     rank_print(
         f"Decode.  median latency: {med_decode_latency:6.5f} s, median throughput: {med_decode_throughput:9.2f} token/s"
+    )
+    rank_print(
+        f"Decode.  average latency: {mean_decode_latency:6.5f} s, average throughput: {mean_decode_throughput:9.2f} token/s"
     )
     measurement_results["median_decode_latency"] = med_decode_latency
     measurement_results["median_decode_throughput"] = med_decode_throughput
@@ -357,6 +383,7 @@ def latency_test(
         bench_args.batch_size[0],
         bench_args.input_len[0],
         4,  # shorter decoding to speed up the warmup
+        server_args,
     )
     rank_print("Benchmark ...")
 
@@ -367,7 +394,14 @@ def latency_test(
     ):
         reqs = prepare_synthetic_inputs_for_latency_test(bs, il)
         ret = latency_test_run_once(
-            bench_args.run_name, model_runner, rank_print, reqs, bs, il, ol
+            bench_args.run_name, 
+            model_runner, 
+            rank_print, 
+            reqs, 
+            bs, 
+            il, 
+            ol, 
+            server_args,
         )
         if ret is not None:
             result_list.append(ret)

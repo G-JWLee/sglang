@@ -17,7 +17,7 @@ limitations under the License.
 
 import os
 import time
-from typing import Optional
+from typing import List, Optional
 import warnings
 
 import torch
@@ -37,7 +37,7 @@ from hip import paged_hip_attention, HiPAttentionArgs
 class HiPAttentionEnvs:
     def __init__(self):
         self.refresh_interval = int(os.getenv('HIP_REFRESH_INTERVAL', '8'))
-        self.hip_dense_layers = os.getenv('HIP_DENSE_LAYERS', '0,1,2')
+        self.hip_dense_layers: List[int] = os.getenv('HIP_DENSE_LAYERS', '0,1,2')
         try:
             t = int(self.hip_dense_layers)
             self.hip_dense_layers = list(range(t))
@@ -72,6 +72,9 @@ class HiPAttentionEnvs:
         
         self.hip_decode_always_dense = os.getenv('HIP_DECODE_ALWAYS_DENSE', '0') == '1'
         self.hip_prefill_always_dense = os.getenv('HIP_PREFILL_ALWAYS_DENSE', '0') == '1'
+        
+        self.hip_prefill_dense_threshold = int(os.getenv('HIP_PREFILL_DENSE_THRESHOLD', '8192'))
+        self.hip_decode_dense_threshold = int(os.getenv('HIP_DECODE_DENSE_THRESHOLD', '8192'))
         
         print(self.decode_config())
         print(self.prefill_config())
@@ -132,6 +135,7 @@ class RadixAttention(SRTRadixAttention):
         self.last_metadata = None
         self.using_cached_metadata = False
         self.cached_metadata = None
+        self.force_dense = False
 
     def extend_forward_flashinfer(self, q, k, v, input_metadata: InputMetadata):
         # using two wrappers is unnecessary in the current PR, but are prepared for future PRs
@@ -142,36 +146,31 @@ class RadixAttention(SRTRadixAttention):
             if isinstance(prefill_wrapper_paged, list):
                 prefill_wrapper_paged = prefill_wrapper_paged[1]
 
-        if not input_metadata.flashinfer_use_ragged:
-            if k is not None:
-                assert v is not None
-                self.store_kv_cache(k, v, input_metadata)
-
-            o = prefill_wrapper_paged.forward(
-                q.contiguous().view(-1, self.tp_q_head_num, self.head_dim),
-                input_metadata.token_to_kv_pool.get_kv_buffer(self.layer_id),
-                causal=True,
-                sm_scale=self.scaling,
-                window_left=self.sliding_window_size,
-                logits_soft_cap=self.logit_cap,
-            )
-        else:
-            if input_metadata.triton_max_seq_len == 0:
-                t_start = time.time()
-                input_metadata.triton_max_seq_len = torch.max(input_metadata.seq_lens).item()
-                elapsed_item = time.time() - t_start
+        if input_metadata.triton_max_seq_len == 0:
+            t_start = time.time()
+            input_metadata.triton_max_seq_len = torch.max(input_metadata.seq_lens).item()
+            elapsed_item = time.time() - t_start
+            if elapsed_item >= 1:
                 print(f'RadixAttention: Seq len calculated {input_metadata.triton_max_seq_len}, took {elapsed_item} ms')
-            
-            # start = torch.cuda.Event(True)
-            # start.record()
-            
-            if  (self.layer_id in envs.hip_dense_layers) or\
-                envs.hip_prefill_always_dense or\
-                (input_metadata.batch_size > 1) or\
-                (
-                    (input_metadata.triton_max_seq_len < (20 * 1024)) or\
-                    (q.shape[0] < 512)
-                ):
+        
+        if  (self.layer_id in envs.hip_dense_layers) or\
+            envs.hip_prefill_always_dense or\
+            self.force_dense or\
+            any(map(lambda x: x <= envs.hip_prefill_dense_threshold, input_metadata.extend_prefix_lens_cpu)):
+            if not input_metadata.flashinfer_use_ragged:
+                if k is not None:
+                    assert v is not None
+                    self.store_kv_cache(k, v, input_metadata)
+
+                o = prefill_wrapper_paged.forward(
+                    q.contiguous().view(-1, self.tp_q_head_num, self.head_dim),
+                    input_metadata.token_to_kv_pool.get_kv_buffer(self.layer_id),
+                    causal=True,
+                    sm_scale=self.scaling,
+                    window_left=self.sliding_window_size,
+                    logits_soft_cap=self.logit_cap,
+                )
+            else:
                 o1, s1 = (
                     input_metadata.flashinfer_prefill_wrapper_ragged.forward_return_lse(
                         q.contiguous().view(-1, self.tp_q_head_num, self.head_dim),
@@ -195,34 +194,46 @@ class RadixAttention(SRTRadixAttention):
                     )
 
                     o, _ = merge_state(o1, s1, o2, s2)
-
                 self.store_kv_cache(k, v, input_metadata)
-            else:
-                warnings.warn('HiP attention is used in prompting!', stacklevel=0)
+        else:
+            warnings.warn('HiP attention is used in prompting!', stacklevel=0)
+            
+            if k is not None:
+                assert v is not None
+                self.store_kv_cache(k, v, input_metadata)
                 
-                k_cache, v_cache = input_metadata.token_to_kv_pool.get_kv_buffer(self.layer_id)
-                
-                o, _ = forward_paged_hip(
-                    q.contiguous().view(-1, self.tp_q_head_num, self.head_dim),
-                    k_cache, 
-                    v_cache,
-                    input_metadata.positions,
-                    input_metadata.seq_lens,
-                    input_metadata.req_to_token_pool.req_to_token,
-                    input_metadata.req_pool_indices,
-                    self.scaling,
-                    input_metadata.batch_size,
-                    is_prefill=True,
-                )
+            # print(input_metadata.extend_seq_lens_cpu)
             
-            # end = torch.cuda.Event(True)
-            # end.record()
+            k_cache, v_cache = input_metadata.token_to_kv_pool.get_kv_buffer(self.layer_id)
             
-            if input_metadata.total_num_tokens >= global_config.layer_sync_threshold:
-                torch.cuda.synchronize()
+            q_reshaped = q.contiguous().view(-1, self.tp_q_head_num, self.head_dim)
+            o = torch.empty_like(q_reshaped)
+            start_len = 0
+            decoding_reqs = []
+            decoding_reqs_poistions = []
+            for idx_batch, seq_len in enumerate(input_metadata.extend_seq_lens_cpu):
+                if seq_len == 0:
+                    decoding_reqs.append(idx_batch)
+                    decoding_reqs_poistions.append(start_len)
+                else:
+                    o_req, _ = forward_paged_hip(
+                        q_reshaped[start_len:start_len+seq_len],
+                        k_cache, 
+                        v_cache,
+                        input_metadata.positions[start_len:start_len+seq_len],
+                        input_metadata.seq_lens[idx_batch:idx_batch+1],
+                        input_metadata.req_to_token_pool.req_to_token,
+                        input_metadata.req_pool_indices[idx_batch:idx_batch+1],
+                        self.scaling, 1,
+                        is_prefill=True,
+                    )
+                    o[start_len:start_len+seq_len] = o_req
+                start_len += seq_len
+            assert len(decoding_reqs) == 0
             
-            # end.synchronize()
-            # print(start.elapsed_time(end), input_metadata.triton_max_seq_len)
+        if  (input_metadata.total_num_tokens >= global_config.layer_sync_threshold) and\
+            (self.layer_id % 2 == 1):
+            torch.cuda.synchronize()
 
         return o.view(-1, self.tp_q_head_num * self.head_dim)
 
@@ -242,7 +253,8 @@ class RadixAttention(SRTRadixAttention):
         k_cache, v_cache = input_metadata.token_to_kv_pool.get_kv_buffer(self.layer_id)
 
         if  (self.layer_id in envs.hip_dense_layers) or\
-            envs.hip_decode_always_dense:
+            envs.hip_decode_always_dense or\
+            self.force_dense:
             o = decode_wrapper.forward(
                 query,
                 (k_cache, v_cache),
@@ -288,6 +300,7 @@ def forward_paged_hip(
 ):
     N, HEAD, HID = query.shape
     TDST = N // batch_size
+    
     query = query.view(batch_size, TDST, HEAD, HID)
     
     N_PAGE, HEAD_KV, _HID = k_cache.shape

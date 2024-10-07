@@ -80,7 +80,8 @@ class RadixAttention(SRTRadixAttention):
                 t_start = time.time()
                 input_metadata.triton_max_seq_len = torch.max(input_metadata.seq_lens).item()
                 elapsed_item = time.time() - t_start
-                print(f'RadixAttention: Seq len calculated {input_metadata.triton_max_seq_len}, took {elapsed_item} ms')
+                if elapsed_item >= 1:
+                    print(f'RadixAttention: Seq len calculated {input_metadata.triton_max_seq_len}, took {elapsed_item} ms')
             
             o = torch.zeros_like(q.contiguous().view(-1, self.tp_q_head_num, self.head_dim))
             

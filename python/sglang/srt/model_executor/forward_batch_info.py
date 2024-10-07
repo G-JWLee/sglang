@@ -77,6 +77,7 @@ class InputMetadata:
     return_logprob: bool = False
     top_logprobs_nums: List[int] = None
     extend_seq_lens_cpu: List[int] = None
+    extend_prefix_lens_cpu: List[int] = None
     logprob_start_lens_cpu: List[int] = None
 
     # For multimodal
@@ -159,6 +160,7 @@ class InputMetadata:
             self.extend_no_prefix = all(l == 0 for l in batch.prefix_lens_cpu)
 
             self.extend_seq_lens_cpu = extend_lens_cpu
+            self.extend_prefix_lens_cpu = batch.prefix_lens_cpu
             self.logprob_start_lens_cpu = [
                 (
                     min(

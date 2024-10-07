@@ -175,7 +175,7 @@ class ModelTpServer:
 
         # Init running status
         self.waiting_queue: List[Req] = []
-        self.running_batch: ScheduleBatch = None
+        self.running_batch: Optional[ScheduleBatch] = None
         self.out_pyobjs = []
         self.decode_forward_ct = 0
         self.stream_interval = server_args.stream_interval
@@ -299,7 +299,7 @@ class ModelTpServer:
         elapsed_forward = time_end - time_start_forward
         
         if elapsed > 3e-4: # exceed 3 ms, to prevent too verbose message
-            print('ModelTpServer:', time.time(), elapsed, elapsed_forward)
+            print(f'[{time.time():.5f}] ModelTpServer: {elapsed*1000:.2f} {elapsed_forward*1000:.2f} (TpWorker overhead: {(1 - elapsed_forward/elapsed)*100:.2f} %)')
 
     def print_decode_stats(self):
         num_used = self.max_total_num_tokens - (
