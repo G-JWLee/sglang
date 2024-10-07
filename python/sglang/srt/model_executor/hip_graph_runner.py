@@ -135,7 +135,8 @@ class HiPGraphRunner:
                 assert graph is not None
                 return graph
         
-        mean_seq_len = sum(map(lambda req: len(req.prefix_indices), batch.reqs)) / len(batch.reqs)
+        mean_seq_len = sum(map(lambda req: len(req.fill_ids), batch.reqs)) / len(batch.reqs)
+        # print(mean_seq_len, len(batch.reqs))
         
         if mean_seq_len <= hip_envs.hip_decode_dense_threshold:
             out = get_graph(self.runner_dense).replay(batch)

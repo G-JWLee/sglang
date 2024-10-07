@@ -1,6 +1,6 @@
 #!/bin/bash
 
-for seq_len in 8192 16384 32768 65536 131072
+for seq_len in 16384 32768 65536 131072
 do
 for out_len in 256 512 1024 2048
 do
