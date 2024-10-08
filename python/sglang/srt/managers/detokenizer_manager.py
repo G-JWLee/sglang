@@ -22,6 +22,7 @@ from typing import List
 import uvloop
 import zmq
 import zmq.asyncio
+import os
 
 from sglang.srt.hf_transformers_utils import get_tokenizer
 from sglang.srt.managers.io_struct import (
@@ -126,16 +127,28 @@ class DetokenizerManager:
                 surr_ids.append(s.decode_ids[s.surr_offset : s.read_offset])
 
             # TODO(lmzheng): handle skip_special_tokens/spaces_between_special_tokens per request
-            surr_texts = self.tokenizer.batch_decode(
-                surr_ids,
-                skip_special_tokens=recv_obj.skip_special_tokens[0],
-                spaces_between_special_tokens=recv_obj.spaces_between_special_tokens[0],
-            )
-            read_texts = self.tokenizer.batch_decode(
-                read_ids,
-                skip_special_tokens=recv_obj.skip_special_tokens[0],
-                spaces_between_special_tokens=recv_obj.spaces_between_special_tokens[0],
-            )
+            if os.getenv('SRT_DEBUG_IGNORE_EOS', '0') == '1':
+                surr_texts = self.tokenizer.batch_decode(
+                    surr_ids,
+                    skip_special_tokens=False,
+                    # spaces_between_special_tokens=recv_obj.spaces_between_special_tokens[0],
+                )
+                read_texts = self.tokenizer.batch_decode(
+                    read_ids,
+                    skip_special_tokens=False,
+                    # spaces_between_special_tokens=recv_obj.spaces_between_special_tokens[0],
+                )
+            else:
+                surr_texts = self.tokenizer.batch_decode(
+                    surr_ids,
+                    skip_special_tokens=recv_obj.skip_special_tokens[0],
+                    spaces_between_special_tokens=recv_obj.spaces_between_special_tokens[0],
+                )
+                read_texts = self.tokenizer.batch_decode(
+                    read_ids,
+                    skip_special_tokens=recv_obj.skip_special_tokens[0],
+                    spaces_between_special_tokens=recv_obj.spaces_between_special_tokens[0],
+                )
 
             # Incremental decoding
             output_strs = []

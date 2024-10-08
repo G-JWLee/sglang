@@ -287,8 +287,8 @@ class ModelTpServer:
                         self.running_batch = None
                         break
 
-                    if self.out_pyobjs and self.running_batch.has_stream():
-                        break
+                    # if self.out_pyobjs and self.running_batch.has_stream():
+                    #     break
             else:
                 self.check_memory()
                 self.new_token_ratio = global_config.init_new_token_ratio
@@ -298,7 +298,7 @@ class ModelTpServer:
         elapsed = time_end - time_start
         elapsed_forward = time_end - time_start_forward
         
-        if elapsed > 3e-4: # exceed 3 ms, to prevent too verbose message
+        if elapsed > 5e-3: # exceed 5 ms, to prevent too verbose message
             print(f'[{time.time():.5f}] ModelTpServer: {elapsed*1000:.2f} {elapsed_forward*1000:.2f} (TpWorker overhead: {(1 - elapsed_forward/elapsed)*100:.2f} %)')
 
     def print_decode_stats(self):

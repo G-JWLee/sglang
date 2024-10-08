@@ -136,9 +136,15 @@ class HiPGraphRunner:
                 return graph
         
         mean_seq_len = sum(map(lambda req: len(req.fill_ids), batch.reqs)) / len(batch.reqs)
-        # print(mean_seq_len, len(batch.reqs))
         
-        if mean_seq_len <= hip_envs.hip_decode_dense_threshold:
+        too_short_sequence = mean_seq_len <= hip_envs.hip_decode_dense_threshold
+        too_small_batch = (
+            batch.batch_size() * mean_seq_len) <\
+            (hip_envs.hip_decode_dense_batch_token_threshold * self.model_runner.server_args.tp_size
+        )
+        
+        if too_short_sequence or too_small_batch:
+            # print('dense step', too_short_sequence, too_small_batch)
             out = get_graph(self.runner_dense).replay(batch)
         elif (self.step % self.refresh_interval) == 0:
             out = get_graph(self.runner_refresh).replay(batch)

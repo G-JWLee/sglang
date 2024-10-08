@@ -73,8 +73,9 @@ class HiPAttentionEnvs:
         self.hip_decode_always_dense = os.getenv('HIP_DECODE_ALWAYS_DENSE', '0') == '1'
         self.hip_prefill_always_dense = os.getenv('HIP_PREFILL_ALWAYS_DENSE', '0') == '1'
         
-        self.hip_prefill_dense_threshold = int(os.getenv('HIP_PREFILL_DENSE_THRESHOLD', '7168'))
-        self.hip_decode_dense_threshold = int(os.getenv('HIP_DECODE_DENSE_THRESHOLD', '7168'))
+        self.hip_prefill_dense_threshold = int(os.getenv('HIP_PREFILL_DENSE_THRESHOLD', '8192'))
+        self.hip_decode_dense_threshold = int(os.getenv('HIP_DECODE_DENSE_THRESHOLD', '8192'))
+        self.hip_decode_dense_batch_token_threshold = int(os.getenv('HIP_DECODE_DENSE_BATCH_SIZE_THRESHOLD', f'{32 * 8192}')) # batch token per GPU
         
         print(self.decode_config())
         print(self.prefill_config())
