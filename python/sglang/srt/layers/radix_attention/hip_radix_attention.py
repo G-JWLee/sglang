@@ -62,7 +62,7 @@ class HiPAttentionEnvs:
         self.hip_prefill_bsk = int(os.getenv('HIP_PREFILL_BSK', self.hip_bsk))
         
         self.hip_sw = int(os.getenv('HIP_SW', '256'))
-        self.hip_nsink = int(os.getenv('HIP_NSINK', '16'))
+        self.hip_nsink = int(os.getenv('HIP_NSINK', '256'))
         
         self.hip_sample_method = os.getenv('HIP_SAMPLE_METHOD', 'center')
         
