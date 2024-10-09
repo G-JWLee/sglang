@@ -203,16 +203,27 @@ class ModelRunner:
                 self.model_config.model_override_args
             )
 
-        self.model = get_model(
-            model_config=self.vllm_model_config,
-            load_config=self.load_config,
-            device_config=self.device_config,
-            parallel_config=None,
-            scheduler_config=None,
-            multimodal_config=None,
-            lora_config=None,
-            cache_config=None,
-        )
+        try:
+            self.model = get_model(
+                model_config=self.vllm_model_config,
+                load_config=self.load_config,
+                device_config=self.device_config,
+                parallel_config=None,
+                scheduler_config=None,
+                multimodal_config=None,
+                lora_config=None,
+                cache_config=None,
+            )
+        except TypeError:
+            self.model = get_model(
+                model_config=self.vllm_model_config,
+                load_config=self.load_config,
+                device_config=self.device_config,
+                parallel_config=None,
+                scheduler_config=None,
+                lora_config=None,
+                cache_config=None,
+            )
         self.sliding_window_size = (
             self.model.get_attention_sliding_window_size()
             if hasattr(self.model, "get_attention_sliding_window_size")
