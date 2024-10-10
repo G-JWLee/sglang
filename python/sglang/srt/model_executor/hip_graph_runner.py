@@ -147,6 +147,7 @@ class HiPGraphRunner:
             # print('dense step', too_short_sequence, too_small_batch)
             out = get_graph(self.runner_dense).replay(batch)
             # NOTE: do not proceed step
+            self.step = 0
         elif (self.step % self.refresh_interval) == 0:
             out = get_graph(self.runner_refresh).replay(batch)
             self.step += 1
