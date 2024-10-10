@@ -62,18 +62,6 @@ class HiPGraphRunner:
             
             for module in self.model_runner.model.modules():
                 if isinstance(module, RadixAttention):
-                    module.checkout_metadata = False
-                    module.last_metadata = None
-                    module.using_cached_metadata = False
-                    module.cached_metadata = None
-                    module.force_dense = True
-            
-            runner_dense.graph_memory_pool = runner_refresh.graph_memory_pool
-            runner_dense.capture([bsz])
-            self.pool = runner_dense.graph_memory_pool
-            
-            for module in self.model_runner.model.modules():
-                if isinstance(module, RadixAttention):
                     module.checkout_metadata = True
                     module.last_metadata = None
                     module.using_cached_metadata = False
@@ -95,6 +83,18 @@ class HiPGraphRunner:
             runner_cached.graph_memory_pool = self.pool
             runner_cached.capture([bsz])
             self.pool = runner_cached.graph_memory_pool
+            
+            # for module in self.model_runner.model.modules():
+            #     if isinstance(module, RadixAttention):
+            #         module.checkout_metadata = False
+            #         module.last_metadata = None
+            #         module.using_cached_metadata = False
+            #         module.cached_metadata = None
+            #         module.force_dense = True
+            
+            # runner_dense.graph_memory_pool = runner_refresh.graph_memory_pool
+            # runner_dense.capture([bsz])
+            # self.pool = runner_dense.graph_memory_pool
             
             for module in self.model_runner.model.modules():
                 if isinstance(module, RadixAttention):
