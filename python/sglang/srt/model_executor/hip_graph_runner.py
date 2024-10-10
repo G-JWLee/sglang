@@ -136,7 +136,8 @@ class HiPGraphRunner:
                 assert graph is not None
                 return graph
         
-        forse_sparse = os.getenv('SRT_DEBUG_FORSE_SPARSE', '0') == '1'
+        forse_sparse = os.getenv('SRT_DEBUG_RUNNER_FORSE_SPARSE', '0') == '1'
+        forse_dense = os.getenv('SRT_DEBUG_RUNNER_FORSE_DENSE', '0') == '1'
         
         if forse_sparse:
             if (self.step % self.refresh_interval) == 0:
@@ -144,6 +145,8 @@ class HiPGraphRunner:
             else:
                 out = get_graph(self.runner_cached).replay(batch)
             self.step += 1
+        elif forse_dense:
+            out = get_graph(self.runner_dense).replay(batch)
         else:
             mean_seq_len = sum(map(lambda req: len(req.fill_ids), batch.reqs)) / len(batch.reqs)
             
