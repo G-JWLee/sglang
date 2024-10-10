@@ -341,8 +341,8 @@ def forward_paged_hip(
     )
     
     if DEBUG_NAN:
-        passed_context = torch.logical_or(torch.isnan(query), torch.isinf(query))
-        assert not passed_query.any().item()
-        assert not passed_context.any().item()
+        passed_context = torch.logical_or(torch.isnan(context), torch.isinf(context))
+        assert not passed_query.any().item(), passed_query
+        assert not passed_context.any().item(), passed_context
     
     return context.view(N, HEAD, HID), metadata
