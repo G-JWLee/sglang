@@ -440,7 +440,7 @@ class TokenizerManager:
     ):
         while True:
             try:
-                await asyncio.wait_for(state.event.wait(), timeout=4)
+                await asyncio.wait_for(state.event.wait(), timeout=60)
             except asyncio.TimeoutError:
                 if request is not None and await request.is_disconnected():
                     for rid in [obj.rid] if obj.is_single else obj.rid:
@@ -486,7 +486,7 @@ class TokenizerManager:
     ):
         while True:
             try:
-                await asyncio.wait_for(state.event.wait(), timeout=4)
+                await asyncio.wait_for(state.event.wait(), timeout=60)
                 break
             except asyncio.TimeoutError:
                 if request is not None and await request.is_disconnected():
