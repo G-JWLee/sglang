@@ -1,3 +1,4 @@
+import os
 import torch
 from typing import Dict, List
 from sglang.srt.model_executor.cuda_graph_runner import CudaGraphRunner, ScheduleBatch
@@ -135,23 +136,32 @@ class HiPGraphRunner:
                 assert graph is not None
                 return graph
         
-        mean_seq_len = sum(map(lambda req: len(req.fill_ids), batch.reqs)) / len(batch.reqs)
+        forse_sparse = os.getenv('SRT_DEBUG_FORSE_SPARSE', '0') == '1'
         
-        too_short_sequence = mean_seq_len <= hip_envs.hip_decode_dense_threshold
-        too_small_batch = (
-            batch.batch_size() * mean_seq_len) <\
-            (hip_envs.hip_decode_dense_batch_token_threshold * self.model_runner.server_args.tp_size
-        )
-        
-        if too_short_sequence or too_small_batch:
-            # print('dense step', too_short_sequence, too_small_batch)
-            out = get_graph(self.runner_dense).replay(batch)
-            # NOTE: do not proceed step
-            self.step = 0
-        elif (self.step % self.refresh_interval) == 0:
-            out = get_graph(self.runner_refresh).replay(batch)
+        if forse_sparse:
+            if (self.step % self.refresh_interval) == 0:
+                out = get_graph(self.runner_refresh).replay(batch)
+            else:
+                out = get_graph(self.runner_cached).replay(batch)
             self.step += 1
         else:
-            out = get_graph(self.runner_cached).replay(batch)
-            self.step += 1
+            mean_seq_len = sum(map(lambda req: len(req.fill_ids), batch.reqs)) / len(batch.reqs)
+            
+            too_short_sequence = mean_seq_len <= hip_envs.hip_decode_dense_threshold
+            too_small_batch = (
+                batch.batch_size() * mean_seq_len) <\
+                (hip_envs.hip_decode_dense_batch_token_threshold * self.model_runner.server_args.tp_size
+            )
+            
+            if too_short_sequence or too_small_batch:
+                # print('dense step', too_short_sequence, too_small_batch)
+                out = get_graph(self.runner_dense).replay(batch)
+                # NOTE: do not proceed step
+                self.step = 0
+            elif (self.step % self.refresh_interval) == 0:
+                out = get_graph(self.runner_refresh).replay(batch)
+                self.step += 1
+            else:
+                out = get_graph(self.runner_cached).replay(batch)
+                self.step += 1
         return out
