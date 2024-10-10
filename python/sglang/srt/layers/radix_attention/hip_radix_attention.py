@@ -328,11 +328,21 @@ def forward_paged_hip(
         **(envs.decode_config() if not is_prefill else envs.prefill_config()),
     )
     
+    DEBUG_NAN = (os.getenv('DEBUG_NAN', '0') == '1') and not torch.cuda.is_current_stream_capturing()
+    
+    if DEBUG_NAN:
+        passed_query = torch.logical_or(torch.isnan(query), torch.isinf(query))
+    
     context, metadata = paged_hip_attention(
         query,
         previous_mask_metadata=cached_metadata,
         softmax_scale=sm_scale,
         args=args,
     )
+    
+    if DEBUG_NAN:
+        passed_context = torch.logical_or(torch.isnan(query), torch.isinf(query))
+        assert not passed_query.any().item()
+        assert not passed_context.any().item()
     
     return context.view(N, HEAD, HID), metadata
