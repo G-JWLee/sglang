@@ -127,7 +127,7 @@ class DetokenizerManager:
                 surr_ids.append(s.decode_ids[s.surr_offset : s.read_offset])
 
             # TODO(lmzheng): handle skip_special_tokens/spaces_between_special_tokens per request
-            if os.getenv('SRT_DEBUG_IGNORE_EOS', '0') == '1':
+            if (os.getenv('SRT_DEBUG_IGNORE_EOS', '0') == '1') or (os.getenv('SRT_DEBUG_DECODE_SPECIAL_TOKENS', '0') == '1'):
                 surr_texts = self.tokenizer.batch_decode(
                     surr_ids,
                     skip_special_tokens=False,
