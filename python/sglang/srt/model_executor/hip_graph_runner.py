@@ -40,6 +40,10 @@ class HiPGraphRunner:
     def capture_runners(self, batch_size_list: List[int]):
         self.batch_sizes = batch_size_list
         
+        pool_refresh = None
+        pool_cached = None
+        pool_dense = None
+        
         for bsz in list(sorted(batch_size_list, reverse=True)):
             runner_refresh = CudaGraphRunner(
                 self.model_runner, 
@@ -62,15 +66,27 @@ class HiPGraphRunner:
             
             for module in self.model_runner.model.modules():
                 if isinstance(module, RadixAttention):
+                    module.checkout_metadata = False
+                    module.last_metadata = None
+                    module.using_cached_metadata = False
+                    module.cached_metadata = None
+                    module.force_dense = True
+            
+            runner_dense.graph_memory_pool = pool_dense
+            runner_dense.capture([bsz])
+            pool_dense = runner_dense.graph_memory_pool
+            
+            for module in self.model_runner.model.modules():
+                if isinstance(module, RadixAttention):
                     module.checkout_metadata = True
                     module.last_metadata = None
                     module.using_cached_metadata = False
                     module.cached_metadata = None
                     module.force_dense = False
             
-            runner_refresh.graph_memory_pool = self.pool
+            runner_refresh.graph_memory_pool = pool_refresh
             runner_refresh.capture([bsz])
-            self.pool = runner_refresh.graph_memory_pool
+            pool_refresh = runner_refresh.graph_memory_pool
             
             for module in self.model_runner.model.modules():
                 if isinstance(module, RadixAttention):
@@ -80,21 +96,9 @@ class HiPGraphRunner:
                     module.last_metadata = None
                     module.force_dense = False
             
-            runner_cached.graph_memory_pool = self.pool
+            runner_cached.graph_memory_pool = pool_cached
             runner_cached.capture([bsz])
-            self.pool = runner_cached.graph_memory_pool
-            
-            # for module in self.model_runner.model.modules():
-            #     if isinstance(module, RadixAttention):
-            #         module.checkout_metadata = False
-            #         module.last_metadata = None
-            #         module.using_cached_metadata = False
-            #         module.cached_metadata = None
-            #         module.force_dense = True
-            
-            # runner_dense.graph_memory_pool = runner_refresh.graph_memory_pool
-            # runner_dense.capture([bsz])
-            # self.pool = runner_dense.graph_memory_pool
+            pool_cached = runner_cached.graph_memory_pool
             
             for module in self.model_runner.model.modules():
                 if isinstance(module, RadixAttention):
@@ -136,16 +140,16 @@ class HiPGraphRunner:
                 assert graph is not None
                 return graph
         
-        forse_sparse = os.getenv('SRT_DEBUG_RUNNER_FORSE_SPARSE', '0') == '1'
-        forse_dense = os.getenv('SRT_DEBUG_RUNNER_FORSE_DENSE', '0') == '1'
+        force_sparse = os.getenv('SRT_DEBUG_RUNNER_FORCE_SPARSE', '0') == '1'
+        force_dense = os.getenv('SRT_DEBUG_RUNNER_FORCE_DENSE', '0') == '1'
         
-        if forse_sparse:
+        if force_sparse:
             if (self.step % self.refresh_interval) == 0:
                 out = get_graph(self.runner_refresh).replay(batch)
             else:
                 out = get_graph(self.runner_cached).replay(batch)
             self.step += 1
-        elif forse_dense:
+        elif force_dense:
             out = get_graph(self.runner_dense).replay(batch)
         else:
             mean_seq_len = sum(map(lambda req: len(req.fill_ids), batch.reqs)) / len(batch.reqs)
