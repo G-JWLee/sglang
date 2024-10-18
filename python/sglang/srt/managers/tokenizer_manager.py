@@ -174,7 +174,13 @@ class TokenizerManager:
             input_text = obj.text if not_use_index else obj.text[index]
             if obj.input_ids is None:
                 assert self.tokenizer is not None
-                input_ids = self.tokenizer.encode(input_text)
+                input_ids = self.tokenizer.encode(input_text, add_special_tokens=True)
+                while (
+                    (len(input_ids) > 1) and\
+                    (input_ids[0] == self.tokenizer.bos_token_id) and\
+                    (input_ids[1] == self.tokenizer.bos_token_id)
+                ):
+                    input_ids.pop(0)
             else:
                 input_ids = obj.input_ids if not_use_index else obj.input_ids[index]
 

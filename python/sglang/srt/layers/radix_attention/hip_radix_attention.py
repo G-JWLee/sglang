@@ -77,6 +77,9 @@ class HiPAttentionEnvs:
         self.hip_decode_dense_threshold = int(os.getenv('HIP_DECODE_DENSE_THRESHOLD', '8192'))
         self.hip_decode_dense_batch_token_threshold = int(os.getenv('HIP_DECODE_DENSE_BATCH_SIZE_THRESHOLD', f'{32 * 8192}')) # batch token per GPU
         
+        self.hip_extend = os.getenv('HIP_EXTEND', '0') == '1'
+        self.hip_extend_context_length = int(os.getenv('HIP_EXTEND_CONTEXT_LENGTH', '131072'))
+        
         print(self.decode_config())
         print(self.prefill_config())
         print('dense layers =', self.hip_dense_layers)
@@ -120,6 +123,7 @@ class RadixAttention(SRTRadixAttention):
         sliding_window_size: Optional[int] = None,
         logit_cap: int = -1,
         v_head_dim: int = -1,
+        rope = None,
     ):
         super().__init__(
             num_heads=num_heads,
@@ -137,6 +141,11 @@ class RadixAttention(SRTRadixAttention):
         self.using_cached_metadata = False
         self.cached_metadata = None
         self.force_dense = False
+        self.rope = rope
+        cos_sin = self.rope.cos_sin_cache
+        cos, sin = cos_sin.chunk(2, dim=-1)
+        self.rope_cos = cos.repeat(1, 2)
+        self.rope_sin = sin.repeat(1, 2)
 
     def extend_forward_flashinfer(self, q, k, v, input_metadata: InputMetadata):
         # using two wrappers is unnecessary in the current PR, but are prepared for future PRs
@@ -154,10 +163,13 @@ class RadixAttention(SRTRadixAttention):
             if elapsed_item >= 1:
                 print(f'RadixAttention: Seq len calculated {input_metadata.triton_max_seq_len}, took {elapsed_item} ms')
         
-        if  (self.layer_id in envs.hip_dense_layers) or\
-            envs.hip_prefill_always_dense or\
-            self.force_dense or\
-            any(map(lambda x: x <= envs.hip_prefill_dense_threshold, input_metadata.extend_prefix_lens_cpu)):
+        if  (
+                (self.layer_id in envs.hip_dense_layers) or\
+                envs.hip_prefill_always_dense or\
+                self.force_dense or\
+                any(map(lambda x: x <= envs.hip_prefill_dense_threshold, input_metadata.extend_prefix_lens_cpu))
+            ) and\
+            (not envs.hip_extend):
             if not input_metadata.flashinfer_use_ragged:
                 if k is not None:
                     assert v is not None
@@ -217,15 +229,16 @@ class RadixAttention(SRTRadixAttention):
                     decoding_reqs.append(idx_batch)
                     decoding_reqs_poistions.append(start_len)
                 else:
-                    o_req, _ = forward_paged_hip(
-                        q_reshaped[start_len:start_len+seq_len],
-                        k_cache, 
-                        v_cache,
-                        input_metadata.positions[start_len:start_len+seq_len],
-                        input_metadata.seq_lens[idx_batch:idx_batch+1],
-                        input_metadata.req_to_token_pool.req_to_token,
-                        input_metadata.req_pool_indices[idx_batch:idx_batch+1],
-                        self.scaling, 1,
+                    o_req, _ = self.forward_paged_hip(
+                        query=q_reshaped[start_len:start_len+seq_len],
+                        k_cache=k_cache, 
+                        v_cache=v_cache,
+                        positions=input_metadata.positions[start_len:start_len+seq_len],
+                        seq_lens=input_metadata.seq_lens[idx_batch:idx_batch+1],
+                        req_to_tokens=input_metadata.req_to_token_pool.req_to_token,
+                        req_pool_indices=input_metadata.req_pool_indices[idx_batch:idx_batch+1],
+                        sm_scale=self.scaling, 
+                        batch_size=1,
                         is_prefill=True,
                     )
                     o[start_len:start_len+seq_len] = o_req
@@ -253,9 +266,12 @@ class RadixAttention(SRTRadixAttention):
         query = q.contiguous().view(-1, self.tp_q_head_num, self.head_dim)
         k_cache, v_cache = input_metadata.token_to_kv_pool.get_kv_buffer(self.layer_id)
 
-        if  (self.layer_id in envs.hip_dense_layers) or\
-            envs.hip_decode_always_dense or\
-            self.force_dense:
+        if  (
+                (self.layer_id in envs.hip_dense_layers) or\
+                envs.hip_decode_always_dense or\
+                self.force_dense
+            ) and\
+            (not envs.hip_extend):
             o = decode_wrapper.forward(
                 query,
                 (k_cache, v_cache),
@@ -268,17 +284,21 @@ class RadixAttention(SRTRadixAttention):
             if self.using_cached_metadata:
                 metadata = self.cached_metadata
             
-            o, metadata = forward_paged_hip(
-                query, 
-                k_cache, 
-                v_cache, 
-                input_metadata.positions,
-                input_metadata.seq_lens,
-                input_metadata.req_to_token_pool.req_to_token,
-                input_metadata.req_pool_indices,
-                self.scaling,
-                input_metadata.batch_size,
+            o, metadata = self.forward_paged_hip(
+                query=query, 
+                sm_scale=self.scaling,
+                batch_size=input_metadata.batch_size,
+                
+                k_cache=k_cache, 
+                v_cache=v_cache, 
+                
+                positions=input_metadata.positions,
+                seq_lens=input_metadata.seq_lens,
+                req_to_tokens=input_metadata.req_to_token_pool.req_to_token,
+                req_pool_indices=input_metadata.req_pool_indices,
+                
                 cached_metadata=metadata,
+                is_prefill=False
             )
             
             if self.checkout_metadata:
@@ -286,63 +306,112 @@ class RadixAttention(SRTRadixAttention):
 
         return o.view(-1, self.tp_q_head_num * self.head_dim)
 
-def forward_paged_hip(
-    query: torch.Tensor, 
-    k_cache: torch.Tensor, 
-    v_cache: torch.Tensor,
-    positions: torch.Tensor,
-    seq_lens: torch.Tensor,
-    req_to_tokens: torch.Tensor,
-    req_pool_indices: torch.Tensor,
-    sm_scale: float,
-    batch_size: int,
-    cached_metadata = None,
-    is_prefill: bool = False,
-):
-    N, HEAD, HID = query.shape
-    TDST = N // batch_size
-    
-    query = query.view(batch_size, TDST, HEAD, HID)
-    
-    N_PAGE, HEAD_KV, _HID = k_cache.shape
-    assert v_cache.shape == k_cache.shape
-    assert _HID == HID
-    k_cache = k_cache.view(N_PAGE, 1, HEAD_KV, HID)
-    v_cache = v_cache.view(N_PAGE, 1, HEAD_KV, HID)
-    
-    block_table = req_to_tokens.index_select(
-        dim=0, index=req_pool_indices
-    )
-    _BSZ, MODEL_SEQ_LEN = block_table.shape
-    assert batch_size == _BSZ
-    
-    cache_seq_lens = seq_lens
-    position_ids = positions.view(batch_size, TDST) + 1 # BUG(-): this naming is wrong... this should be key_seq_lens
-    
-    args = HiPAttentionArgs(
-        k_cache=k_cache,
-        v_cache=v_cache,
-        block_table=block_table,
-        cache_seq_lens=cache_seq_lens,
-        position_ids=position_ids,
-        **(envs.decode_config() if not is_prefill else envs.prefill_config()),
-    )
-    
-    DEBUG_NAN = (os.getenv('DEBUG_NAN', '0') == '1') and not torch.cuda.is_current_stream_capturing()
-    
-    if DEBUG_NAN:
-        passed_query = torch.logical_or(torch.isnan(query), torch.isinf(query))
-    
-    context, metadata = paged_hip_attention(
-        query,
-        previous_mask_metadata=cached_metadata,
-        softmax_scale=sm_scale,
-        args=args,
-    )
-    
-    if DEBUG_NAN:
-        passed_context = torch.logical_or(torch.isnan(context), torch.isinf(context))
-        assert not passed_query.any().item(), passed_query
-        assert not passed_context.any().item(), passed_context
-    
-    return context.view(N, HEAD, HID), metadata
+    def forward_paged_hip(
+        self, 
+        
+        query: torch.Tensor,
+        sm_scale: float,
+        batch_size: int,
+        
+        k_cache: torch.Tensor, 
+        v_cache: torch.Tensor,
+        
+        positions: torch.Tensor,
+        seq_lens: torch.Tensor,
+        req_to_tokens: torch.Tensor,
+        req_pool_indices: torch.Tensor,
+        
+        cached_metadata = None,
+        is_prefill: bool = False,
+    ):
+        N, HEAD, HID = query.shape
+        TDST = N // batch_size
+        
+        query = query.view(batch_size, TDST, HEAD, HID)
+        
+        N_PAGE, HEAD_KV, _HID = k_cache.shape
+        assert v_cache.shape == k_cache.shape
+        assert _HID == HID
+        k_cache = k_cache.view(N_PAGE, 1, HEAD_KV, HID)
+        v_cache = v_cache.view(N_PAGE, 1, HEAD_KV, HID)
+        
+        block_table = req_to_tokens.index_select(
+            dim=0, index=req_pool_indices
+        )
+        _BSZ, MODEL_SEQ_LEN = block_table.shape
+        assert batch_size == _BSZ
+        
+        cache_seq_lens = seq_lens
+        position_ids = positions.view(batch_size, TDST) + 1 # BUG(-): this naming is wrong... this should be key_seq_lens
+        
+        args = HiPAttentionArgs(
+            k_cache=k_cache,
+            v_cache=v_cache,
+            block_table=block_table,
+            cache_seq_lens=cache_seq_lens,
+            position_ids=position_ids,
+            **(envs.decode_config() if not is_prefill else envs.prefill_config()),
+        )
+        
+        DEBUG_NAN = (os.getenv('DEBUG_NAN', '0') == '1') and not torch.cuda.is_current_stream_capturing()
+        
+        if DEBUG_NAN:
+            passed_query = torch.logical_or(torch.isnan(query), torch.isinf(query))
+        
+        if (not envs.hip_extend):
+            context, metadata = paged_hip_attention(
+                query,
+                previous_mask_metadata=cached_metadata,
+                softmax_scale=sm_scale,
+                args=args,
+            )
+        else:
+            from hip.models.hip_attention.attention2_draft_sampling_extend import dual_stage_quadratic_hip_attention
+            IS_GEMMA = os.getenv('IS_GEMMA', '0') == '1'
+            
+            cos = self.rope_cos # type: torch.Tensor
+            sin = self.rope_sin # type: torch.Tensor
+            
+            # print(query.dtype) # bfloat16
+            context, metadata = dual_stage_quadratic_hip_attention(
+                (query * sm_scale).to(query.dtype), 
+                None, 
+                None, 
+                args=HiPAttentionArgs(
+                    k_cache=args.k_cache.view(torch.uint8) if args.k_cache.dtype == torch.float8_e5m2 else args.k_cache,
+                    v_cache=args.v_cache.view(torch.uint8) if args.v_cache.dtype == torch.float8_e5m2 else args.v_cache,
+                    block_table=args.block_table,
+                    cache_seq_lens=args.cache_seq_lens,
+                    position_ids=args.position_ids - 1,
+                    
+                    mask_k=256,
+                    block_size_q=32 if IS_GEMMA else 64,
+                    block_stride_q=2 if IS_GEMMA else 4,
+                    block_size_k=32 if IS_GEMMA else 64, # BLOCK_CHUNK
+                    
+                    sliding_window_size=1024,
+                    sink_token_size=256,
+                    
+                    using_extend=True,
+                    need_apply_rope=True,
+                    rope_cos=cos,
+                    rope_sin=sin,
+                    
+                    logit_softcap=args.logit_softcap,
+                ),
+                second_stage_k=2048,
+                stages=[
+                    (64, 8192),
+                ],
+                model_context_length=envs.hip_extend_context_length,
+                # block_sparse_block_size_q=32,
+            )
+            context = context.to(query.dtype)
+        
+        if DEBUG_NAN:
+            passed_context = torch.logical_or(torch.isnan(context), torch.isinf(context))
+            torch.cuda.synchronize()
+            assert not passed_query.any().item(), f'{passed_query} {passed_query.shape}'
+            assert not passed_context.any().item(), f'{passed_context} {passed_context.shape}'
+        
+        return context.view(N, HEAD, HID), metadata

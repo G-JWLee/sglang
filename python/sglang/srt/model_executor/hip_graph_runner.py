@@ -26,6 +26,7 @@ class HiPGraphRunner:
         self.runner_refresh = {}
         self.runner_cached = {}
         self.runner_dense = {}
+        self.hip_metadata = {}
         
         self.step = 0
         self.refresh_interval = 8
@@ -43,6 +44,7 @@ class HiPGraphRunner:
         pool_refresh = None
         pool_cached = None
         pool_dense = None
+        hip_metadata = {}
         
         for bsz in list(sorted(batch_size_list, reverse=True)):
             runner_refresh = CudaGraphRunner(
@@ -93,6 +95,7 @@ class HiPGraphRunner:
                     module.checkout_metadata = False
                     module.using_cached_metadata = True
                     module.cached_metadata = module.last_metadata
+                    hip_metadata[module] = module.last_metadata
                     module.last_metadata = None
                     module.force_dense = False
             
@@ -108,6 +111,7 @@ class HiPGraphRunner:
                     module.cached_metadata = None
                     module.force_dense = False
             
+            self.hip_metadata[bsz] = hip_metadata
             self.runner_refresh[bsz] = runner_refresh
             self.runner_cached[bsz] = runner_cached
             self.runner_dense[bsz] = runner_dense
@@ -160,7 +164,7 @@ class HiPGraphRunner:
                 (hip_envs.hip_decode_dense_batch_token_threshold * self.model_runner.server_args.tp_size
             )
             
-            if too_short_sequence or too_small_batch:
+            if (too_short_sequence or too_small_batch) and (not hip_envs.hip_extend):
                 # print('dense step', too_short_sequence, too_small_batch)
                 out = get_graph(self.runner_dense).replay(batch)
                 # NOTE: do not proceed step
@@ -168,6 +172,11 @@ class HiPGraphRunner:
             elif (self.step % self.refresh_interval) == 0:
                 out = get_graph(self.runner_refresh).replay(batch)
                 self.step += 1
+                
+                # metas = get_graph(self.hip_metadata)
+                # for module, metadata in metas.items():
+                #     print(id(module), metadata.indices[0, -1], metadata.indices.shape, metadata.ks[0, -1], metadata.ks.shape)
+                
             else:
                 out = get_graph(self.runner_cached).replay(batch)
                 self.step += 1

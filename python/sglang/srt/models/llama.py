@@ -17,6 +17,7 @@ limitations under the License.
 # https://github.com/vllm-project/vllm/blob/c7f2cf2b7f67bce5842fedfdba508440fe257375/vllm/model_executor/models/llama.py#L1
 """Inference-only LLaMA model compatible with HuggingFace weights."""
 
+import os
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 import torch
@@ -40,7 +41,8 @@ from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 from sglang.srt.layers.activation import SiluAndMul
 from sglang.srt.layers.layernorm import RMSNorm
 from sglang.srt.layers.logits_processor import LogitsProcessor, LogitsProcessorOutput
-from sglang.srt.layers.radix_attention import RadixAttention
+from sglang.srt.layers.radix_attention import RadixAttention, HiPRadixAttention
+from sglang.srt.layers.radix_attention.hip_radix_attention import envs as hip_envs
 from sglang.srt.layers.sampler import Sampler
 from sglang.srt.model_executor.forward_batch_info import InputMetadata
 
@@ -149,13 +151,23 @@ class LlamaAttention(nn.Module):
             rope_scaling=rope_scaling,
             is_neox_style=rope_is_neox_style,
         )
-        self.attn = RadixAttention(
-            self.num_heads,
-            self.head_dim,
-            self.scaling,
-            num_kv_heads=self.num_kv_heads,
-            layer_id=layer_id,
-        )
+        if RadixAttention == HiPRadixAttention:
+            self.attn = RadixAttention(
+                self.num_heads,
+                self.head_dim,
+                self.scaling,
+                num_kv_heads=self.num_kv_heads,
+                layer_id=layer_id,
+                rope=self.rotary_emb,
+            )
+        else:
+            self.attn = RadixAttention(
+                self.num_heads,
+                self.head_dim,
+                self.scaling,
+                num_kv_heads=self.num_kv_heads,
+                layer_id=layer_id,
+            )
 
     def forward(
         self,
@@ -165,7 +177,17 @@ class LlamaAttention(nn.Module):
     ) -> torch.Tensor:
         qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
-        q, k = self.rotary_emb(positions, q, k)
+        
+        # print(q.shape)
+        
+        if (not hip_envs.hip_extend):# or (q.shape[0] == 1):
+            # print('roped')
+            q, k = self.rotary_emb(positions, q, k)
+        else:
+            # print('roped')
+            # q, k = self.rotary_emb(positions, q, k)
+            pass
+        
         attn_output = self.attn(q, k, v, input_metadata)
         output, _ = self.o_proj(attn_output)
         return output
@@ -191,6 +213,10 @@ class LlamaDecoderLayer(nn.Module):
             )
         rope_is_neox_style = getattr(config, "rope_is_neox_style", True)
         max_position_embeddings = getattr(config, "max_position_embeddings", 8192)
+        
+        if 'EXTEND_LEN' in os.environ:
+            max_position_embeddings = int(os.environ['EXTEND_LEN']) * 1024
+        
         self.self_attn = LlamaAttention(
             config=config,
             hidden_size=self.hidden_size,
