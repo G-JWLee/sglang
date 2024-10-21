@@ -69,6 +69,7 @@ class HiPAttentionEnvs:
         self.hip_seq_threshold = int(os.getenv('HIP_SEQ_THRESH', '-1'))
         
         self.hip_offload = os.getenv('HIP_OFFLOAD', '0') == '1'
+        assert not self.hip_offload, "working on..."
         
         self.hip_decode_always_dense = os.getenv('HIP_DECODE_ALWAYS_DENSE', '0') == '1'
         self.hip_prefill_always_dense = os.getenv('HIP_PREFILL_ALWAYS_DENSE', '0') == '1'
