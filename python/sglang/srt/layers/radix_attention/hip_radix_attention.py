@@ -79,7 +79,7 @@ class HiPAttentionEnvs:
         self.hip_decode_dense_batch_token_threshold = int(os.getenv('HIP_DECODE_DENSE_BATCH_SIZE_THRESHOLD', f'{32 * 8192}')) # batch token per GPU
         
         self.hip_extend = os.getenv('HIP_EXTEND', '0') == '1'
-        self.hip_extend_context_length = int(os.getenv('HIP_EXTEND_CONTEXT_LENGTH', '131072'))
+        self.hip_extend_context_length = int(os.getenv('HIP_EXTEND_CONTEXT_LENGTH', '65536'))
         
         print(self.decode_config())
         print(self.prefill_config())
