@@ -389,7 +389,7 @@ class RadixAttention(SRTRadixAttention):
                     block_size_q=32 if IS_GEMMA else 64,
                     block_stride_q=2 if IS_GEMMA else 4,
                     block_size_k=32 if IS_GEMMA else 64, # BLOCK_CHUNK
-                    block_stride_k=2 if IS_GEMMA else 2,
+                    block_stride_k=2 if IS_GEMMA else 1,
                     
                     sliding_window_size=1024,
                     sink_token_size=256,
@@ -407,7 +407,7 @@ class RadixAttention(SRTRadixAttention):
                 ],
                 scan_stride=1, # THIS LOOKS BUGGY
                 model_context_length=envs.hip_extend_context_length,
-                scan_early_terminate=32 if IS_GEMMA else 32,
+                scan_early_terminate=32 if IS_GEMMA else 1,
                 # block_sparse_block_size_q=32,
             )
             context = context.to(query.dtype)
