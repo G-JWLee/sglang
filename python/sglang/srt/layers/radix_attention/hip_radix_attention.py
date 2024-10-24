@@ -164,13 +164,13 @@ class RadixAttention(SRTRadixAttention):
             if elapsed_item >= 1:
                 print(f'RadixAttention: Seq len calculated {input_metadata.triton_max_seq_len}, took {elapsed_item} ms')
         
-        if  (
-                (self.layer_id in envs.hip_dense_layers) or\
-                envs.hip_prefill_always_dense or\
-                self.force_dense or\
-                any(map(lambda x: x <= envs.hip_prefill_dense_threshold, input_metadata.extend_prefix_lens_cpu))
-            ) and\
-            (not envs.hip_extend):
+        require_dense = (
+            (self.layer_id in envs.hip_dense_layers) or\
+            envs.hip_prefill_always_dense or\
+            self.force_dense or\
+            any(map(lambda x: x <= envs.hip_prefill_dense_threshold, input_metadata.extend_prefix_lens_cpu))
+        )
+        if  require_dense and (not envs.hip_extend):
             if not input_metadata.flashinfer_use_ragged:
                 if k is not None:
                     assert v is not None
@@ -241,6 +241,7 @@ class RadixAttention(SRTRadixAttention):
                         sm_scale=self.scaling, 
                         batch_size=1,
                         is_prefill=True,
+                        is_dense=require_dense,
                     )
                     o[start_len:start_len+seq_len] = o_req
                 start_len += seq_len
@@ -267,12 +268,12 @@ class RadixAttention(SRTRadixAttention):
         query = q.contiguous().view(-1, self.tp_q_head_num, self.head_dim)
         k_cache, v_cache = input_metadata.token_to_kv_pool.get_kv_buffer(self.layer_id)
 
-        if  (
-                (self.layer_id in envs.hip_dense_layers) or\
-                envs.hip_decode_always_dense or\
-                self.force_dense
-            ) and\
-            (not envs.hip_extend):
+        require_dense = (
+            (self.layer_id in envs.hip_dense_layers) or\
+            envs.hip_decode_always_dense or\
+            self.force_dense
+        )
+        if  require_dense and (not envs.hip_extend):
             o = decode_wrapper.forward(
                 query,
                 (k_cache, v_cache),
@@ -299,7 +300,8 @@ class RadixAttention(SRTRadixAttention):
                 req_pool_indices=input_metadata.req_pool_indices,
                 
                 cached_metadata=metadata,
-                is_prefill=False
+                is_prefill=False,
+                is_dense=require_dense,
             )
             
             if self.checkout_metadata:
@@ -324,6 +326,7 @@ class RadixAttention(SRTRadixAttention):
         
         cached_metadata = None,
         is_prefill: bool = False,
+        is_dense: bool = False,
     ):
         N, HEAD, HID = query.shape
         TDST = N // batch_size
@@ -391,8 +394,8 @@ class RadixAttention(SRTRadixAttention):
                     block_size_k=32 if IS_GEMMA else 64, # BLOCK_CHUNK
                     block_stride_k=2 if IS_GEMMA else 1,
                     
-                    sliding_window_size=1024,
-                    sink_token_size=256,
+                    sliding_window_size=1024 if not is_dense else 4096,
+                    sink_token_size=256 if not is_dense else 512,
                     
                     using_extend=True,
                     need_apply_rope=True,
@@ -401,9 +404,9 @@ class RadixAttention(SRTRadixAttention):
                     
                     logit_softcap=args.logit_softcap,
                 ),
-                second_stage_k=2048,
+                second_stage_k=2048 if not is_dense else 4096,
                 stages=[
-                    (64, 8192),
+                    (64, 8192 if not is_dense else 16384),
                 ],
                 scan_stride=1, # THIS LOOKS BUGGY
                 model_context_length=envs.hip_extend_context_length,
