@@ -377,6 +377,7 @@ class RadixAttention(SRTRadixAttention):
             sin = self.rope_sin # type: torch.Tensor
             
             mask_k_1k = int(os.getenv('HIP_DRAFT_MASK_K_1K', '1'))
+            scan_k_1k = int(os.getenv('HIP_DRAFT_SCAN_K_1K', '8'))
             
             # print(query.dtype) # bfloat16
             context, metadata = dual_stage_quadratic_hip_attention(
@@ -408,9 +409,9 @@ class RadixAttention(SRTRadixAttention):
                 ),
                 second_stage_k=mask_k_1k*1024 if not is_dense else 4096,
                 stages=[
-                    (32, mask_k_1k*8*1024 if not is_dense else 16384),
+                    (32, scan_k_1k*1024 if not is_dense else 32768),
                 ],
-                scan_stride=1, # THIS LOOKS BUGGY
+                scan_stride=1,
                 model_context_length=envs.hip_extend_context_length,
                 scan_early_terminate=1,
                 stage_early_terminate=1,
