@@ -436,7 +436,7 @@ class RadixAttention(SRTRadixAttention):
                 stage_early_terminate=1,
                 cached_metadata=cached_metadata,
                 # scan_extend_backend='dynamic_extend' if (not is_dense) else 'streaming',
-                scan_extend_backend='streaming' if self.layer_idx < 3 else 'relative',
+                scan_extend_backend='streaming' if self.layer_id < 3 else 'relative',
                 sa_extend_backend='dynamic_extend',
                 # block_sparse_block_size_q=32,
             )
