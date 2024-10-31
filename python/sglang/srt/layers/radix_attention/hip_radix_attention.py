@@ -397,9 +397,9 @@ class RadixAttention(SRTRadixAttention):
                 cache_seq_lens=args.cache_seq_lens,
                 position_ids=args.position_ids - 1,
                 
-                mask_k=512, # control quadratic cost
+                mask_k=256, # control quadratic cost
                 block_size_q=32 if IS_GEMMA else 64,
-                block_stride_q=2 if IS_GEMMA else 4,
+                block_stride_q=2 if IS_GEMMA else 1,
                 block_size_k=32 if IS_GEMMA else 64, # BLOCK_CHUNK
                 block_stride_k=2 if IS_GEMMA else 1,
                 
@@ -443,8 +443,8 @@ class RadixAttention(SRTRadixAttention):
                     # (1, 32, 32768),
                     # (1, 1, 8192),
                     
-                    (4, 64, 16384),
-                    (2, 8, 4096),
+                    (1, 64, 16384),
+                    (1, 8, 4096),
                 ] if (not is_dense) else [
                     # (2, 64, 65536),
                     # (1, 8, 16384),
@@ -452,8 +452,8 @@ class RadixAttention(SRTRadixAttention):
                     # (1, 32, 65536),
                     # (1, 1, 16384),
                     
-                    (4, 64, 32768),
-                    (2, 8, 8192),
+                    (1, 64, 32768),
+                    (1, 8, 8192),
                 ],
                 scan_stride=1,
                 scan_block_stride_q=-1,
