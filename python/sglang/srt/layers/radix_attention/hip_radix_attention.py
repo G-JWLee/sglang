@@ -246,6 +246,8 @@ class RadixAttention(SRTRadixAttention):
                         batch_size=1,
                         is_prefill=True,
                         is_dense=is_dense_layer,
+                        # k=k[start_len:start_len+seq_len] if k is not None else None,
+                        # v=v[start_len:start_len+seq_len] if v is not None else None,
                     )
                     o[start_len:start_len+seq_len] = o_req
                 start_len += seq_len
@@ -332,6 +334,8 @@ class RadixAttention(SRTRadixAttention):
         cached_metadata = None,
         is_prefill: bool = False,
         is_dense: bool = False,
+        k: Optional[torch.Tensor] = None,
+        v: Optional[torch.Tensor] = None,
     ):
         N, HEAD, HID = query.shape
         TDST = N // batch_size
@@ -386,37 +390,53 @@ class RadixAttention(SRTRadixAttention):
             mask_k_1k = int(os.getenv('HIP_DRAFT_MASK_K_1K', '2'))
             scan_k_1k = int(os.getenv('HIP_DRAFT_SCAN_K_1K', '16'))
             
+            args = HiPAttentionArgs(
+                k_cache=args.k_cache.view(torch.uint8) if args.k_cache.dtype == torch.float8_e5m2 else args.k_cache,
+                v_cache=args.v_cache.view(torch.uint8) if args.v_cache.dtype == torch.float8_e5m2 else args.v_cache,
+                block_table=args.block_table,
+                cache_seq_lens=args.cache_seq_lens,
+                position_ids=args.position_ids - 1,
+                
+                mask_k=128, # control quadratic cost
+                block_size_q=32 if IS_GEMMA else 64,
+                block_stride_q=2 if IS_GEMMA else 1,
+                block_size_k=32 if IS_GEMMA else 64, # BLOCK_CHUNK
+                block_stride_k=2 if IS_GEMMA else 1,
+                
+                sliding_window_size=1024 if (not is_dense) else 4096,
+                sink_token_size=256 if (not is_dense) else 256,
+                
+                using_extend=True,
+                need_apply_rope=True,
+                rope_cos=cos,
+                rope_sin=sin,
+                
+                logit_softcap=args.logit_softcap,
+            )
+            
+            if k is not None:
+                args.k_cache = None
+                args.v_cache = None
+                args.block_table = None
+                args.cache_seq_lens = None
+                args.using_paged_cache = False
+                
+                assert batch_size == 1
+                k = k.unsqueeze(0)
+                v = v.unsqueeze(0)
+                
+                if os.getenv('HIP_DEBUG', '0') == '1':
+                    print(k.shape, v.shape, query.shape)
+            
             # print(query.dtype) # bfloat16
             context, metadata = dual_stage_quadratic_hip_attention(
                 (query * sm_scale).to(query.dtype), 
-                None, 
-                None, 
-                args=HiPAttentionArgs(
-                    k_cache=args.k_cache.view(torch.uint8) if args.k_cache.dtype == torch.float8_e5m2 else args.k_cache,
-                    v_cache=args.v_cache.view(torch.uint8) if args.v_cache.dtype == torch.float8_e5m2 else args.v_cache,
-                    block_table=args.block_table,
-                    cache_seq_lens=args.cache_seq_lens,
-                    position_ids=args.position_ids - 1,
-                    
-                    mask_k=128, # control quadratic cost
-                    block_size_q=32 if IS_GEMMA else 64,
-                    block_stride_q=2 if IS_GEMMA else 1,
-                    block_size_k=32 if IS_GEMMA else 64, # BLOCK_CHUNK
-                    block_stride_k=2 if IS_GEMMA else 1,
-                    
-                    sliding_window_size=1024 if (not is_dense) else 4096,
-                    sink_token_size=256 if (not is_dense) else 256,
-                    
-                    using_extend=True,
-                    need_apply_rope=True,
-                    rope_cos=cos,
-                    rope_sin=sin,
-                    
-                    logit_softcap=args.logit_softcap,
-                ),
+                k, 
+                v, 
+                args=args,
                 second_stage_k=mask_k_1k*1024 if (not is_dense) else mask_k_1k*2*1024,
                 stages=[ # control linear cost
-                    # (2, 64, 32768),
+                    # (2, 64, 3 2768),
                     # (1, 8, 8192),
                     
                     (1, 32, 32768),
@@ -436,8 +456,9 @@ class RadixAttention(SRTRadixAttention):
                 stage_early_terminate=1,
                 cached_metadata=cached_metadata,
                 # scan_extend_backend='dynamic_extend' if (not is_dense) else 'streaming',
-                scan_extend_backend='streaming' if self.layer_id < 3 else 'relative',
+                scan_extend_backend='dynamic_extend' if self.layer_id < 1 else 'relative',
                 sa_extend_backend='dynamic_extend',
+                # sa_extend_backend='dynamic_extend' if (not is_decode) else 'streaming',
                 # block_sparse_block_size_q=32,
             )
             context = context.to(query.dtype)
