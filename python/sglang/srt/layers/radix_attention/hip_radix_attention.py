@@ -391,6 +391,66 @@ class RadixAttention(SRTRadixAttention):
             cos = self.rope_cos # type: torch.Tensor
             sin = self.rope_sin # type: torch.Tensor
             
+            preset = os.getenv('HIP_PRESET', 'mid')
+            config_mask_k = {
+                'high': 64,
+                'mid': 256,
+                'low': 256,
+            }[preset]
+            config_bsq = {
+                'high': 1,
+                'mid': 4,
+                'low': 4,
+            }[preset]
+            config_stage = {
+                'high': [
+                    ScanStage(
+                        stage_block_stride_q=1,
+                        stage_chunk_size=32,
+                        stage_k=32768,
+                        stage_stride=1,
+                    ),
+                    ScanStage(
+                        stage_block_stride_q=1,
+                        stage_chunk_size=1,
+                        stage_k=8192,
+                        stage_stride=1,
+                    ),
+                ],
+                'mid': [
+                    ScanStage(
+                        stage_block_stride_q=4,
+                        stage_chunk_size=32,
+                        stage_k=32768,
+                        stage_stride=1,
+                    ),
+                    ScanStage(
+                        stage_block_stride_q=1,
+                        stage_chunk_size=8,
+                        stage_k=8192,
+                        stage_stride=1,
+                    ),
+                ],
+                'low': [
+                    ScanStage(
+                        stage_block_stride_q=4,
+                        stage_chunk_size=32,
+                        stage_k=32768,
+                        stage_stride=1,
+                    ),
+                ]
+            }[preset]
+            config_second_k = {
+                'high': 2048,
+                'mid': 2048,
+                'low': 2048,
+            }[preset]
+            config_sa_extend_backend = {
+                'high': 'streaming', 
+                'mid': 'streaming',
+                'low': 'streaming',
+            }[preset]
+            
             args = HiPAttentionArgs(
                 k_cache=args.k_cache.view(torch.uint8) if args.k_cache.dtype == torch.float8_e5m2 else args.k_cache,
                 v_cache=args.v_cache.view(torch.uint8) if args.v_cache.dtype == torch.float8_e5m2 else args.v_cache,
@@ -398,13 +458,13 @@ class RadixAttention(SRTRadixAttention):
                 cache_seq_lens=args.cache_seq_lens,
                 position_ids=args.position_ids - 1,
                 
-                mask_k=256, # control quadratic cost
+                mask_k=config_mask_k, # control quadratic cost
                 block_size_q=32 if IS_GEMMA else 64,
-                block_stride_q=2 if IS_GEMMA else 1,
+                block_stride_q=2 if IS_GEMMA else config_bsq,
                 block_size_k=32 if IS_GEMMA else 64, # BLOCK_CHUNK
                 block_stride_k=2 if IS_GEMMA else 1,
                 
-                sliding_window_size=2048 if (not is_dense) else 4096,
+                sliding_window_size=1024 if (not is_dense) else 4096,
                 sink_token_size=256 if (not is_dense) else 256,
                 
                 using_extend=True,
@@ -417,34 +477,20 @@ class RadixAttention(SRTRadixAttention):
             
             stage_args = dict(
                 args=args,
-                second_stage_k=2048 if (not is_dense) else 4096,
-                stages=[ # Sparse Layers
-                    ScanStage(
-                        stage_block_stride_q=2,
-                        stage_chunk_size=32,
-                        stage_k=32768,
-                        stage_stride=2,
-                    ),
-                    EvalScoreStage(
-                        stage_block_stride_q=4,
-                        stage_chunk_size=32,
-                        stage_k=16384,
-                        stage_stride=1,
-                        block_chunk=64,
-                    ),
-                    ScanStage(
-                        stage_block_stride_q=1,
-                        stage_chunk_size=1,
-                        stage_k=8192,
-                        stage_stride=1,
-                        stage_extend_backend='streaming',
-                    )
-                ] if (not is_dense) else [ # Dense Layers
+                
+                # second_stage_k=4096 if (not is_dense) else 4096,
+                # low_percent=0.75 if (not is_dense) else 0.0,
+                # low_k_ratio=0.25 if (not is_dense) else 1.0,
+                # dim_to_lower='seq',
+                
+                second_stage_k=config_second_k if (not is_dense) else 4096,
+                
+                stages= config_stage if (not is_dense) else [ # Dense Layers
                     ScanStage(
                         stage_block_stride_q=1,
                         stage_chunk_size=32,
                         stage_k=131072,
-                        stage_stride=2,
+                        stage_stride=1,
                     ),
                     EvalScoreStage(
                         stage_block_stride_q=1,
@@ -461,15 +507,15 @@ class RadixAttention(SRTRadixAttention):
                         # stage_extend_backend='streaming',
                     )
                 ],
-                scan_stride=4 if (not is_dense) else 2,
+                scan_stride=1 if (not is_dense) else 1,
                 scan_block_stride_q=-1,
                 model_context_length=envs.hip_extend_context_length,
                 scan_early_terminate=1,
                 stage_early_terminate=1,
                 cached_metadata=cached_metadata,
                 block_sparse_block_size_q=64,
-                scan_extend_backend='relative' if self.layer_id < 1 else 'relative',
-                sa_extend_backend='streaming',
+                scan_extend_backend='dynamic_extend' if is_dense else 'relative',
+                sa_extend_backend=config_sa_extend_backend,
             )
             
             if k is not None:
