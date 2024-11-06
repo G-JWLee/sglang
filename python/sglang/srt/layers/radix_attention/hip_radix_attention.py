@@ -381,6 +381,7 @@ class RadixAttention(SRTRadixAttention):
                 args=args,
             )
         else:
+            warnings.warn('HIP Generation 3 is under develop. BE CAUTION!!!')
             from hip.models.hip_attention.attention2_draft_sampling_extend import (
                 dual_stage_quadratic_hip_attention,
                 ScanStage,
