@@ -406,14 +406,14 @@ class RadixAttention(SRTRadixAttention):
                 'high': [
                     ScanStage(
                         stage_block_stride_q=1,
-                        stage_chunk_size=32,
-                        stage_k=32768,
+                        stage_chunk_size=16,
+                        stage_k=65536,
                         stage_stride=1,
                     ),
                     ScanStage(
                         stage_block_stride_q=1,
                         stage_chunk_size=1,
-                        stage_k=8192,
+                        stage_k=16384,
                         stage_stride=1,
                     ),
                 ],
@@ -441,9 +441,14 @@ class RadixAttention(SRTRadixAttention):
                 ]
             }[preset]
             config_second_k = {
-                'high': 2048,
+                'high': 4096,
                 'mid': 2048,
                 'low': 2048,
+            }[preset]
+            config_second_k_dense = {
+                'high': 8192,
+                'mid': 4096,
+                'low': 4096,
             }[preset]
             config_sa_extend_backend = {
                 'high': 'streaming', 
@@ -483,7 +488,7 @@ class RadixAttention(SRTRadixAttention):
                 # low_k_ratio=0.25 if (not is_dense) else 1.0,
                 # dim_to_lower='seq',
                 
-                second_stage_k=config_second_k if (not is_dense) else 4096,
+                second_stage_k=config_second_k if (not is_dense) else config_second_k_dense,
                 
                 stages= config_stage if (not is_dense) else [ # Dense Layers
                     ScanStage(
@@ -514,7 +519,7 @@ class RadixAttention(SRTRadixAttention):
                 stage_early_terminate=1,
                 cached_metadata=cached_metadata,
                 block_sparse_block_size_q=64,
-                scan_extend_backend='dynamic_extend' if is_dense else 'relative',
+                scan_extend_backend='streaming' if is_dense else 'relative',
                 sa_extend_backend=config_sa_extend_backend,
             )
             
