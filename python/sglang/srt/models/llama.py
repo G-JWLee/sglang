@@ -178,15 +178,8 @@ class LlamaAttention(nn.Module):
         qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         
-        # print(q.shape)
-        
-        if (not hip_envs.hip_extend):# or (q.shape[0] == 1):
-            # print('roped')
+        if (not hip_envs.hip_extend):
             q, k = self.rotary_emb(positions, q, k)
-        else:
-            # print('roped')
-            # q, k = self.rotary_emb(positions, q, k)
-            pass
         
         attn_output = self.attn(q, k, v, input_metadata)
         output, _ = self.o_proj(attn_output)
