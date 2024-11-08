@@ -519,7 +519,11 @@ class ModelRunner:
         if self.server_args.disable_cuda_graph_padding:
             batch_size_list = list(range(1, 32)) + [64, 128]
         else:
-            batch_size_list = [1, 2, 4] + [i * 8 for i in range(1, int(os.getenv('SRT_MAX_BATCH', '256')) // 8 + 1)]
+            MAX_BATCH = int(os.getenv('SRT_MAX_BATCH', '256'))
+            if MAX_BATCH > 0:
+                batch_size_list = [1, 2, 4] + [i * 8 for i in range(1, MAX_BATCH // 8 + 1)]
+            else:
+                batch_size_list = [1]
 
         self.cuda_graph_runner = GraphRunner(
             self,
