@@ -144,10 +144,13 @@ class RadixAttention(SRTRadixAttention):
         self.force_dense = False
         self.rope = rope
         if rope is not None:
-            cos_sin = self.rope.cos_sin_cache
-            cos, sin = cos_sin.chunk(2, dim=-1)
-            self.rope_cos = cos.repeat(1, 2)
-            self.rope_sin = sin.repeat(1, 2)
+            if isinstance(self.rope, (list, tuple)):
+                _, self.rope_cos, self.rope_sin = self.rope
+            else:
+                cos_sin = self.rope.cos_sin_cache
+                cos, sin = cos_sin.chunk(2, dim=-1)
+                self.rope_cos = cos.repeat(1, 2)
+                self.rope_sin = sin.repeat(1, 2)
         else:
             self.rope_cos = self.rope_sin = None
 

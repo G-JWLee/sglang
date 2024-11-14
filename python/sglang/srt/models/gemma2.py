@@ -192,7 +192,7 @@ class Gemma2Attention(nn.Module):
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         
         if (not hip_envs.hip_extend):
-            q, k = self.rotary_emb(positions, q, k)
+            q, k = self.rotary_emb[0](positions, q, k)
         
         attn_output = self.attn(q, k, v, input_metadata)
         output, _ = self.o_proj(attn_output)
@@ -281,9 +281,8 @@ class Gemma2Model(nn.Module):
         
         if 'EXTEND_LEN' in os.environ:
             max_position_embeddings = int(os.environ['EXTEND_LEN']) * 1024
-        print(max_position_embeddings, torch.get_default_dtype())
         
-        self.rope = GemmaRotaryEmbedding(
+        self.rope_module = GemmaRotaryEmbedding(
             config.head_dim,
             config.head_dim,
             max_position_embeddings,
@@ -291,7 +290,12 @@ class Gemma2Model(nn.Module):
             is_neox_style=True,
             dtype=torch.get_default_dtype(),
         )
-
+        cos_sin = self.rope_module.cos_sin_cache
+        cos, sin = cos_sin.chunk(2, dim=-1)
+        self.rope_cos = cos.repeat(1, 2)
+        self.rope_sin = sin.repeat(1, 2)
+        self.rope = (self.rope_module, self.rope_cos, self.rope_sin)
+        
         self.embed_tokens = VocabParallelEmbedding(
             config.vocab_size,
             config.hidden_size,
@@ -322,8 +326,11 @@ class Gemma2Model(nn.Module):
             hidden_states = self.embed_tokens(input_ids)
         else:
             hidden_states = input_embeds
-        normalizer = torch.tensor(self.config.hidden_size**0.5, dtype=torch.float16)
-        hidden_states *= normalizer
+        # normalizer = torch.tensor(self.config.hidden_size**0.5, dtype=torch.float16)
+        # normalize = self.normalizer
+        # hidden_states *= normalizer
+        hidden_states = hidden_states.clone()
+        hidden_states.mul_(self.config.hidden_size**0.5)
 
         residual = None
         for i in range(len(self.layers)):
