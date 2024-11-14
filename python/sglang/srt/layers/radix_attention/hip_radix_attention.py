@@ -471,7 +471,7 @@ class RadixAttention(SRTRadixAttention):
                     block_size_k=32 if IS_GEMMA else 64, # BLOCK_CHUNK
                     block_stride_k=2 if IS_GEMMA else 1,
                     
-                    sliding_window_size=1024 if (not is_dense) else 4096,
+                    sliding_window_size=131072 if is_dense else (1024 if is_decode else 1024),
                     sink_token_size=256 if (not is_dense) else 256,
                     
                     using_extend=True,
@@ -485,10 +485,10 @@ class RadixAttention(SRTRadixAttention):
                 stage_args = dict(
                     args=args,
                     
-                    # second_stage_k=4096 if (not is_dense) else 4096,
-                    # low_percent=0.75 if (not is_dense) else 0.0,
+                    # second_stage_k=8192 if (not is_dense) else 2048,
+                    # low_percent=0.9 if (not is_dense) else 0.0,
                     # low_k_ratio=0.25 if (not is_dense) else 1.0,
-                    # dim_to_lower='seq',
+                    # dim_to_lower='seq' if (not is_decode) else 'head',
                     
                     second_stage_k=config_second_k if (not is_dense) else config_second_k_dense,
                     
