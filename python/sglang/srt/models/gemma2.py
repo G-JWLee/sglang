@@ -17,6 +17,7 @@ limitations under the License.
 # https://github.com/vllm-project/vllm/blob/56b325e977435af744f8b3dca7af0ca209663558/vllm/model_executor/models/gemma2.py
 from typing import Iterable, Optional, Set, Tuple, Union
 
+import os
 import torch
 from torch import nn
 from transformers import PretrainedConfig
@@ -36,7 +37,8 @@ from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 from sglang.srt.layers.activation import GeluAndMul
 from sglang.srt.layers.layernorm import GemmaRMSNorm
 from sglang.srt.layers.logits_processor import LogitsProcessor
-from sglang.srt.layers.radix_attention import RadixAttention
+from sglang.srt.layers.radix_attention import RadixAttention, HiPRadixAttention, SRTRadixAttention
+from sglang.srt.layers.radix_attention.hip_radix_attention import envs as hip_envs
 from sglang.srt.layers.sampler import Sampler
 from sglang.srt.model_executor.forward_batch_info import InputMetadata
 
@@ -108,6 +110,7 @@ class Gemma2Attention(nn.Module):
         rope_theta: float,
         cache_config: Optional[CacheConfig] = None,
         quant_config: Optional[QuantizationConfig] = None,
+        rope = None,
     ) -> None:
         super().__init__()
         self.layer_idx = layer_idx
@@ -148,29 +151,36 @@ class Gemma2Attention(nn.Module):
             quant_config=quant_config,
         )
         # from vLLM: TODO(woosuk): Use the `get_rope` interface.
-        self.rotary_emb = GemmaRotaryEmbedding(
-            self.head_dim,
-            self.head_dim,
-            max_position_embeddings,
-            base=self.rope_theta,
-            is_neox_style=True,
-            dtype=torch.get_default_dtype(),
-        )
+        
+        self.rotary_emb = rope
 
-        use_sliding_window = layer_idx % 2 == 0 and hasattr(config, "sliding_window")
-        self.attn = RadixAttention(
-            self.num_heads,
-            self.head_dim,
-            self.scaling,
-            num_kv_heads=self.num_kv_heads,
-            layer_id=layer_idx,
-            sliding_window_size=(
-                get_attention_sliding_window_size(config)
-                if use_sliding_window
-                else None
-            ),
-            logit_cap=self.config.attn_logit_softcapping,
-        )
+        use_sliding_window = (layer_idx % 2) == 0 and hasattr(config, "sliding_window")
+        if (RadixAttention == HiPRadixAttention):
+            self.attn = RadixAttention(
+                self.num_heads,
+                self.head_dim,
+                self.scaling,
+                num_kv_heads=self.num_kv_heads,
+                layer_id=layer_idx,
+                sliding_window_size=None,
+                logit_cap=self.config.attn_logit_softcapping,
+                rope=self.rotary_emb,
+            )
+        else:
+            self.attn = SRTRadixAttention(
+                self.num_heads,
+                self.head_dim,
+                self.scaling,
+                num_kv_heads=self.num_kv_heads,
+                layer_id=layer_idx,
+                sliding_window_size=(
+                    get_attention_sliding_window_size(config)
+                    if use_sliding_window
+                    else None
+                ),
+                logit_cap=self.config.attn_logit_softcapping,
+            )
+        
 
     def forward(
         self,
@@ -180,7 +190,10 @@ class Gemma2Attention(nn.Module):
     ) -> torch.Tensor:
         qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
-        q, k = self.rotary_emb(positions, q, k)
+        
+        if (not hip_envs.hip_extend):
+            q, k = self.rotary_emb(positions, q, k)
+        
         attn_output = self.attn(q, k, v, input_metadata)
         output, _ = self.o_proj(attn_output)
         return output
@@ -193,6 +206,7 @@ class Gemma2DecoderLayer(nn.Module):
         config: PretrainedConfig,
         cache_config: Optional[CacheConfig] = None,
         quant_config: Optional[QuantizationConfig] = None,
+        rope = None,
     ) -> None:
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -207,6 +221,7 @@ class Gemma2DecoderLayer(nn.Module):
             rope_theta=config.rope_theta,
             cache_config=cache_config,
             quant_config=quant_config,
+            rope=rope,
         )
         self.hidden_size = config.hidden_size
         self.mlp = Gemma2MLP(
@@ -263,6 +278,19 @@ class Gemma2Model(nn.Module):
     ) -> None:
         super().__init__()
         self.config = config
+        
+        if 'EXTEND_LEN' in os.environ:
+            max_position_embeddings = int(os.environ['EXTEND_LEN']) * 1024
+        print(max_position_embeddings, torch.get_default_dtype())
+        
+        self.rope = GemmaRotaryEmbedding(
+            config.head_dim,
+            config.head_dim,
+            max_position_embeddings,
+            base=config.rope_theta,
+            is_neox_style=True,
+            dtype=torch.get_default_dtype(),
+        )
 
         self.embed_tokens = VocabParallelEmbedding(
             config.vocab_size,
@@ -270,7 +298,7 @@ class Gemma2Model(nn.Module):
         )
         self.layers = nn.ModuleList(
             [
-                Gemma2DecoderLayer(layer_idx, config, cache_config, quant_config)
+                Gemma2DecoderLayer(layer_idx, config, cache_config, quant_config, rope=self.rope)
                 for layer_idx in range(config.num_hidden_layers)
             ]
         )
