@@ -615,14 +615,14 @@ class RadixAttention(SRTRadixAttention):
                     cache_seq_lens=args.cache_seq_lens,
                     position_ids=args.position_ids - 1,
                     
-                    mask_k=256, # control quadratic cost
+                    mask_k=128, # control quadratic cost
                     block_size_q=64,
-                    block_stride_q=4,
+                    block_stride_q=1,
                     block_size_k=64, # BLOCK_CHUNK
                     block_stride_k=1,
                     
-                    sliding_window_size=512 if (not is_dense) else 512,
-                    sink_token_size=256 if (not is_dense) else 256,
+                    sliding_window_size=512 if is_dense else 512,
+                    sink_token_size=256 if is_dense else 256,
                     
                     using_extend=True,
                     need_apply_rope=True,
@@ -640,19 +640,19 @@ class RadixAttention(SRTRadixAttention):
                     # low_k_ratio=0.25 if (not is_dense) else 1.0,
                     # dim_to_lower='seq',
                     
-                    second_stage_k=2*1024 if (not is_dense) else 2*1024,
+                    second_stage_k=(2*1024 if is_dense else 2*1024) if ((self.layer_id % 2) == 0) else 2*1024,
                     
                     stages= [
                         ScanStage(
-                            stage_block_stride_q=4,
+                            stage_block_stride_q=1,
                             stage_chunk_size=32,
-                            stage_k=32768,
+                            stage_k=65536,
                             stage_stride=1,
                         ),
                         ScanStage(
                             stage_block_stride_q=1,
-                            stage_chunk_size=8,
-                            stage_k=8192,
+                            stage_chunk_size=4,
+                            stage_k=32768,
                             stage_stride=1,
                         ),
                     ] if (not is_dense) else [ # Dense Layers
@@ -661,6 +661,7 @@ class RadixAttention(SRTRadixAttention):
                             stage_chunk_size=32,
                             stage_k=65536,
                             stage_stride=1,
+                            stage_extend_backend='streaming',
                         ),
                         # EvalScoreStage(
                         #     stage_block_stride_q=1,
@@ -671,21 +672,21 @@ class RadixAttention(SRTRadixAttention):
                         # ),
                         ScanStage(
                             stage_block_stride_q=1,
-                            stage_chunk_size=1,
-                            stage_k=3*1024,
+                            stage_chunk_size=2,
+                            stage_k=32*1024,
                             stage_stride=1,
-                            # stage_extend_backend='streaming',
+                            stage_extend_backend='relative',
                         )
                     ],
-                    scan_stride=1 if (not is_dense) else 1,
+                    scan_stride=1 if is_dense else 1,
                     scan_block_stride_q=-1,
                     model_context_length=envs.hip_extend_context_length,
                     scan_early_terminate=1,
                     stage_early_terminate=1,
                     cached_metadata=cached_metadata,
                     block_sparse_block_size_q=64,
-                    scan_extend_backend='streaming' if is_dense else 'relative',
-                    sa_extend_backend='streaming',
+                    scan_extend_backend='relative' if is_dense else 'relative',
+                    sa_extend_backend='streaming' if is_dense else 'streaming',
                 )
             else:
                 raise Exception()
