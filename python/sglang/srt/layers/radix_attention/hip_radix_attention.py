@@ -410,12 +410,21 @@ class RadixAttention(SRTRadixAttention):
                 config_stage = {
                     'high': [
                         ScanStage(
+                            stage_block_size_q=128,
+                            stage_block_stride_q=2,
+                            stage_chunk_size=64,
+                            stage_k=None,
+                            stage_stride=1,
+                        ),
+                        ScanStage(
+                            stage_block_size_q=64,
                             stage_block_stride_q=1,
                             stage_chunk_size=16,
                             stage_k=65536,
                             stage_stride=1,
                         ),
                         ScanStage(
+                            stage_block_size_q=64,
                             stage_block_stride_q=1,
                             stage_chunk_size=1,
                             stage_k=16384,
@@ -423,21 +432,52 @@ class RadixAttention(SRTRadixAttention):
                         ),
                     ],
                     'mid': [
+                        # ScanStage(
+                        #     stage_block_size_q=64,
+                        #     stage_block_stride_q=4,
+                        #     stage_chunk_size=32,
+                        #     stage_k=32768,
+                        #     stage_stride=1,
+                        # ),
+                        # ScanStage(
+                        #     stage_block_size_q=64,
+                        #     stage_block_stride_q=1,
+                        #     stage_chunk_size=8,
+                        #     stage_k=8192,
+                        #     stage_stride=1,
+                        # ),
                         ScanStage(
+                            stage_block_size_q=256,
                             stage_block_stride_q=4,
-                            stage_chunk_size=32,
+                            stage_chunk_size=16,
+                            stage_k=None,
+                            stage_stride=1,
+                        ),
+                        ScanStage(
+                            stage_block_size_q=128,
+                            stage_block_stride_q=2,
+                            stage_chunk_size=4,
                             stage_k=32768,
                             stage_stride=1,
                         ),
                         ScanStage(
+                            stage_block_size_q=64,
                             stage_block_stride_q=1,
-                            stage_chunk_size=8,
+                            stage_chunk_size=1,
                             stage_k=8192,
                             stage_stride=1,
                         ),
                     ],
                     'low': [
                         ScanStage(
+                            stage_block_size_q=512,
+                            stage_block_stride_q=8,
+                            stage_chunk_size=64,
+                            stage_k=None,
+                            stage_stride=1,
+                        ),
+                        ScanStage(
+                            stage_block_size_q=64,
                             stage_block_stride_q=4,
                             stage_chunk_size=32,
                             stage_k=32768,
@@ -497,12 +537,21 @@ class RadixAttention(SRTRadixAttention):
                     
                     stages= config_stage if (not is_dense) else [ # Dense Layers
                         ScanStage(
+                            stage_block_size_q=128,
+                            stage_block_stride_q=4,
+                            stage_chunk_size=64,
+                            stage_k=None,
+                            stage_stride=1,
+                        ),
+                        ScanStage(
+                            stage_block_size_q=64,
                             stage_block_stride_q=1,
                             stage_chunk_size=32,
                             stage_k=131072,
                             stage_stride=1,
                         ),
                         EvalScoreStage(
+                            stage_block_size_q=64,
                             stage_block_stride_q=1,
                             stage_chunk_size=32,
                             stage_k=65536,
@@ -510,6 +559,7 @@ class RadixAttention(SRTRadixAttention):
                             block_chunk=64,
                         ),
                         ScanStage(
+                            stage_block_size_q=64,
                             stage_block_stride_q=1,
                             stage_chunk_size=1,
                             stage_k=16384,
@@ -517,11 +567,11 @@ class RadixAttention(SRTRadixAttention):
                             # stage_extend_backend='streaming',
                         )
                     ],
-                    scan_stride=1 if (not is_dense) else 1,
-                    scan_block_stride_q=-1,
+                    # scan_stride=1 if (not is_dense) else 1,
+                    # scan_block_stride_q=-1,
                     model_context_length=envs.hip_extend_context_length,
-                    scan_early_terminate=1,
-                    stage_early_terminate=1,
+                    # scan_early_terminate=1,
+                    # stage_early_terminate=1,
                     cached_metadata=cached_metadata,
                     block_sparse_block_size_q=64,
                     scan_extend_backend='streaming' if is_dense else 'relative',
@@ -564,12 +614,14 @@ class RadixAttention(SRTRadixAttention):
                     
                     stages= [
                         ScanStage(
+                            stage_block_size_q=64,
                             stage_block_stride_q=4,
                             stage_chunk_size=32,
                             stage_k=32768,
                             stage_stride=1,
                         ),
                         ScanStage(
+                            stage_block_size_q=64,
                             stage_block_stride_q=1,
                             stage_chunk_size=8,
                             stage_k=8192,
@@ -577,6 +629,7 @@ class RadixAttention(SRTRadixAttention):
                         ),
                     ] if (not is_dense) else [ # Dense Layers
                         ScanStage(
+                            stage_block_size_q=64,
                             stage_block_stride_q=1,
                             stage_chunk_size=32,
                             stage_k=65536,
@@ -590,6 +643,7 @@ class RadixAttention(SRTRadixAttention):
                         #     block_chunk=64,
                         # ),
                         ScanStage(
+                            stage_block_size_q=64,
                             stage_block_stride_q=1,
                             stage_chunk_size=1,
                             stage_k=3*1024,
@@ -644,12 +698,14 @@ class RadixAttention(SRTRadixAttention):
                     
                     stages= [
                         ScanStage(
+                            stage_block_size_q=64,
                             stage_block_stride_q=1,
                             stage_chunk_size=32,
                             stage_k=65536,
                             stage_stride=1,
                         ),
                         ScanStage(
+                            stage_block_size_q=64,
                             stage_block_stride_q=1,
                             stage_chunk_size=4,
                             stage_k=32768,
@@ -657,6 +713,7 @@ class RadixAttention(SRTRadixAttention):
                         ),
                     ] if (not is_dense) else [ # Dense Layers
                         ScanStage(
+                            stage_block_size_q=64,
                             stage_block_stride_q=1,
                             stage_chunk_size=32,
                             stage_k=65536,
@@ -671,6 +728,7 @@ class RadixAttention(SRTRadixAttention):
                         #     block_chunk=64,
                         # ),
                         ScanStage(
+                            stage_block_size_q=64,
                             stage_block_stride_q=1,
                             stage_chunk_size=2,
                             stage_k=32*1024,
