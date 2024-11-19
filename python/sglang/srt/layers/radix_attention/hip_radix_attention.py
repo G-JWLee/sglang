@@ -20,6 +20,7 @@ import time
 from typing import List, Optional
 import warnings
 
+import json
 import torch
 from flashinfer.cascade import merge_state
 from torch import nn
@@ -33,6 +34,11 @@ from sglang.srt.model_executor.model_runner import global_server_args_dict
 from .radix_attention import RadixAttention as SRTRadixAttention
 
 from hip import paged_hip_attention, HiPAttentionArgs
+from hip.models.hip_attention.attention2_draft_sampling_extend import (
+    dual_stage_quadratic_hip_attention,
+    ScanStage,
+    EvalScoreStage,
+)
 
 class HiPAttentionEnvs:
     def __init__(self):
@@ -153,6 +159,32 @@ class RadixAttention(SRTRadixAttention):
                 self.rope_sin = sin.repeat(1, 2)
         else:
             self.rope_cos = self.rope_sin = None
+        
+        population_file = os.getenv('POPULATION_FILE', './saves/pareto/population-llama3-1-8b-it.json')
+        if os.path.exists(population_file):
+            print('load', population_file)
+            with open(population_file, 'r') as f:
+                data = json.load(f)
+            population = data['population']
+            scores = data['scores']
+            best_candidate = list(sorted(zip(range(len(scores)), scores), key=lambda x: x[1][1]))[0]
+            print('best candidate', best_candidate)
+            stages_json = population[best_candidate[0]][layer_id]
+            stages = []
+            for stage in stages_json:
+                stages.append(
+                    ScanStage(
+                        stage_block_size_q=stage['stage_block_size_q'],
+                        stage_block_stride_q=stage['stage_block_stride_q'],
+                        stage_chunk_size=stage['stage_chunk_size'],
+                        stage_k=stage['stage_k'],
+                        stage_stride=stage['stage_stride'],
+                    )
+                )
+            self.stages = stages
+            print(layer_id, stages)
+        else:
+            self.stages = None
 
     def extend_forward_flashinfer(self, q, k, v, input_metadata: InputMetadata):
         # using two wrappers is unnecessary in the current PR, but are prepared for future PRs
@@ -385,11 +417,6 @@ class RadixAttention(SRTRadixAttention):
             )
         else:
             warnings.warn('HIP Generation 3 is under develop. BE CAUTION!!!')
-            from hip.models.hip_attention.attention2_draft_sampling_extend import (
-                dual_stage_quadratic_hip_attention,
-                ScanStage,
-                EvalScoreStage,
-            )
             IS_GEMMA = os.getenv('IS_GEMMA', '0') == '1'
             
             cos = self.rope_cos # type: torch.Tensor
@@ -397,21 +424,11 @@ class RadixAttention(SRTRadixAttention):
             
             preset = os.getenv('HIP_PRESET', 'mid')
             if preset in ['mid', 'low', 'high']:
-                config_mask_k = {
-                    'high': 64,
-                    'mid': 256,
-                    'low': 256,
-                }[preset]
-                config_bsq = {
-                    'high': 1,
-                    'mid': 4,
-                    'low': 4,
-                }[preset]
                 config_stage = {
                     'high': [
                         ScanStage(
-                            stage_block_size_q=128,
-                            stage_block_stride_q=2,
+                            stage_block_size_q=64,
+                            stage_block_stride_q=1,
                             stage_chunk_size=64,
                             stage_k=None,
                             stage_stride=1,
@@ -432,47 +449,33 @@ class RadixAttention(SRTRadixAttention):
                         ),
                     ],
                     'mid': [
-                        # ScanStage(
-                        #     stage_block_size_q=64,
-                        #     stage_block_stride_q=4,
-                        #     stage_chunk_size=32,
-                        #     stage_k=32768,
-                        #     stage_stride=1,
-                        # ),
-                        # ScanStage(
-                        #     stage_block_size_q=64,
-                        #     stage_block_stride_q=1,
-                        #     stage_chunk_size=8,
-                        #     stage_k=8192,
-                        #     stage_stride=1,
-                        # ),
                         ScanStage(
-                            stage_block_size_q=256,
+                            stage_block_size_q=64,
                             stage_block_stride_q=4,
-                            stage_chunk_size=16,
+                            stage_chunk_size=256,
                             stage_k=None,
                             stage_stride=1,
                         ),
                         ScanStage(
-                            stage_block_size_q=128,
-                            stage_block_stride_q=2,
-                            stage_chunk_size=4,
+                            stage_block_size_q=64,
+                            stage_block_stride_q=4,
+                            stage_chunk_size=32,
                             stage_k=32768,
                             stage_stride=1,
                         ),
                         ScanStage(
                             stage_block_size_q=64,
                             stage_block_stride_q=1,
-                            stage_chunk_size=1,
+                            stage_chunk_size=8,
                             stage_k=8192,
                             stage_stride=1,
                         ),
                     ],
                     'low': [
                         ScanStage(
-                            stage_block_size_q=512,
-                            stage_block_stride_q=8,
-                            stage_chunk_size=64,
+                            stage_block_size_q=64,
+                            stage_block_stride_q=4,
+                            stage_chunk_size=256,
                             stage_k=None,
                             stage_stride=1,
                         ),
@@ -485,6 +488,8 @@ class RadixAttention(SRTRadixAttention):
                         ),
                     ]
                 }[preset]
+                if self.stages is not None:
+                    config_stage = self.stages
                 config_second_k = {
                     'high': 4096,
                     'mid': 2048,
@@ -508,11 +513,11 @@ class RadixAttention(SRTRadixAttention):
                     cache_seq_lens=args.cache_seq_lens,
                     position_ids=args.position_ids - 1,
                     
-                    mask_k=config_mask_k, # control quadratic cost
-                    block_size_q=32 if IS_GEMMA else 64,
-                    block_stride_q=2 if IS_GEMMA else config_bsq,
+                    # mask_k=config_mask_k, # control quadratic cost
+                    # block_size_q=32 if IS_GEMMA else 64,
+                    # block_stride_q=2 if IS_GEMMA else config_bsq,
                     block_size_k=32 if IS_GEMMA else 64, # BLOCK_CHUNK
-                    block_stride_k=2 if IS_GEMMA else 1,
+                    block_stride_k=1 if IS_GEMMA else 1,
                     
                     sliding_window_size=131072 if is_dense else (1024 if is_decode else 1024),
                     sink_token_size=256 if (not is_dense) else 256,
@@ -535,38 +540,39 @@ class RadixAttention(SRTRadixAttention):
                     
                     second_stage_k=config_second_k if (not is_dense) else config_second_k_dense,
                     
-                    stages= config_stage if (not is_dense) else [ # Dense Layers
-                        ScanStage(
-                            stage_block_size_q=128,
-                            stage_block_stride_q=4,
-                            stage_chunk_size=64,
-                            stage_k=None,
-                            stage_stride=1,
-                        ),
-                        ScanStage(
-                            stage_block_size_q=64,
-                            stage_block_stride_q=1,
-                            stage_chunk_size=32,
-                            stage_k=131072,
-                            stage_stride=1,
-                        ),
-                        EvalScoreStage(
-                            stage_block_size_q=64,
-                            stage_block_stride_q=1,
-                            stage_chunk_size=32,
-                            stage_k=65536,
-                            stage_stride=1,
-                            block_chunk=64,
-                        ),
-                        ScanStage(
-                            stage_block_size_q=64,
-                            stage_block_stride_q=1,
-                            stage_chunk_size=1,
-                            stage_k=16384,
-                            stage_stride=1,
-                            # stage_extend_backend='streaming',
-                        )
-                    ],
+                    # stages= config_stage if (not is_dense) else [ # Dense Layers
+                    #     ScanStage(
+                    #         stage_block_size_q=128,
+                    #         stage_block_stride_q=4,
+                    #         stage_chunk_size=64,
+                    #         stage_k=None,
+                    #         stage_stride=1,
+                    #     ),
+                    #     ScanStage(
+                    #         stage_block_size_q=64,
+                    #         stage_block_stride_q=1,
+                    #         stage_chunk_size=32,
+                    #         stage_k=131072,
+                    #         stage_stride=1,
+                    #     ),
+                    #     EvalScoreStage(
+                    #         stage_block_size_q=64,
+                    #         stage_block_stride_q=1,
+                    #         stage_chunk_size=32,
+                    #         stage_k=65536,
+                    #         stage_stride=1,
+                    #         block_chunk=64,
+                    #     ),
+                    #     ScanStage(
+                    #         stage_block_size_q=64,
+                    #         stage_block_stride_q=1,
+                    #         stage_chunk_size=1,
+                    #         stage_k=16384,
+                    #         stage_stride=1,
+                    #         # stage_extend_backend='streaming',
+                    #     )
+                    # ],
+                    stages=config_stage,
                     # scan_stride=1 if (not is_dense) else 1,
                     # scan_block_stride_q=-1,
                     model_context_length=envs.hip_extend_context_length,
