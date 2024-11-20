@@ -167,9 +167,10 @@ class RadixAttention(SRTRadixAttention):
                 data = json.load(f)
             population = data['population']
             scores = data['scores']
-            best_candidate = list(sorted(zip(range(len(scores)), scores), key=lambda x: x[1][1]))[0]
-            print('best candidate', best_candidate)
-            stages_json = population[best_candidate[0]][layer_id]
+            # best_candidate_idx = list(sorted(zip(range(len(scores)), scores), key=lambda x: x[1][1]))[0][0]
+            best_candidate_idx = data['best_idx']
+            print('best candidate', scores[best_candidate_idx])
+            stages_json = population[best_candidate_idx][layer_id]['stages']
             stages = []
             for stage in stages_json:
                 stages.append(
@@ -182,6 +183,7 @@ class RadixAttention(SRTRadixAttention):
                     )
                 )
             self.stages = stages
+            self.stages_second_stage_k = population[best_candidate_idx][layer_id]['second_stage_k']
             print(layer_id, stages)
         else:
             self.stages = None
@@ -490,6 +492,7 @@ class RadixAttention(SRTRadixAttention):
                 }[preset]
                 if self.stages is not None:
                     config_stage = self.stages
+                
                 config_second_k = {
                     'high': 4096,
                     'mid': 2048,
@@ -500,6 +503,10 @@ class RadixAttention(SRTRadixAttention):
                     'mid': 4096,
                     'low': 4096,
                 }[preset]
+                if self.stages is not None:
+                    config_second_k = self.stages_second_stage_k
+                    config_second_k_dense = self.stages_second_stage_k
+                
                 config_sa_extend_backend = {
                     'high': 'streaming', 
                     'mid': 'streaming',
@@ -519,7 +526,7 @@ class RadixAttention(SRTRadixAttention):
                     block_size_k=32 if IS_GEMMA else 64, # BLOCK_CHUNK
                     block_stride_k=1 if IS_GEMMA else 1,
                     
-                    sliding_window_size=131072 if is_dense else (1024 if is_decode else 1024),
+                    sliding_window_size=8192 if is_dense else (1024 if is_decode else 1024),
                     sink_token_size=256 if (not is_dense) else 256,
                     
                     using_extend=True,
@@ -591,9 +598,9 @@ class RadixAttention(SRTRadixAttention):
                     cache_seq_lens=args.cache_seq_lens,
                     position_ids=args.position_ids - 1,
                     
-                    mask_k=256, # control quadratic cost
-                    block_size_q=64,
-                    block_stride_q=4,
+                    # mask_k=256, # control quadratic cost
+                    # block_size_q=64,
+                    # block_stride_q=4,
                     block_size_k=64, # BLOCK_CHUNK
                     block_stride_k=1,
                     
@@ -622,6 +629,13 @@ class RadixAttention(SRTRadixAttention):
                         ScanStage(
                             stage_block_size_q=64,
                             stage_block_stride_q=4,
+                            stage_chunk_size=256,
+                            stage_k=None,
+                            stage_stride=1,
+                        ),
+                        ScanStage(
+                            stage_block_size_q=64,
+                            stage_block_stride_q=4,
                             stage_chunk_size=32,
                             stage_k=32768,
                             stage_stride=1,
@@ -630,10 +644,17 @@ class RadixAttention(SRTRadixAttention):
                             stage_block_size_q=64,
                             stage_block_stride_q=1,
                             stage_chunk_size=8,
-                            stage_k=8192,
+                            stage_k=16384,
                             stage_stride=1,
                         ),
                     ] if (not is_dense) else [ # Dense Layers
+                        ScanStage(
+                            stage_block_size_q=64,
+                            stage_block_stride_q=1,
+                            stage_chunk_size=128,
+                            stage_k=None,
+                            stage_stride=1,
+                        ),
                         ScanStage(
                             stage_block_size_q=64,
                             stage_block_stride_q=1,
@@ -641,29 +662,29 @@ class RadixAttention(SRTRadixAttention):
                             stage_k=65536,
                             stage_stride=1,
                         ),
-                        # EvalScoreStage(
-                        #     stage_block_stride_q=1,
-                        #     stage_chunk_size=32,
-                        #     stage_k=32768,
-                        #     stage_stride=1,
-                        #     block_chunk=64,
-                        # ),
                         ScanStage(
                             stage_block_size_q=64,
                             stage_block_stride_q=1,
-                            stage_chunk_size=1,
-                            stage_k=3*1024,
+                            stage_chunk_size=16,
+                            stage_k=32768,
+                            stage_stride=1,
+                        ),
+                        ScanStage(
+                            stage_block_size_q=64,
+                            stage_block_stride_q=1,
+                            stage_chunk_size=8,
+                            stage_k=16384,
                             stage_stride=1,
                             # stage_extend_backend='streaming',
                         )
                     ],
-                    scan_stride=1 if (not is_dense) else 1,
-                    scan_block_stride_q=-1,
+                    # scan_stride=1 if (not is_dense) else 1,
+                    # scan_block_stride_q=-1,
                     model_context_length=envs.hip_extend_context_length,
-                    scan_early_terminate=1,
-                    stage_early_terminate=1,
+                    # scan_early_terminate=1,
+                    # stage_early_terminate=1,
                     cached_metadata=cached_metadata,
-                    block_sparse_block_size_q=64 if (not IS_GEMMA) else 16,
+                    block_sparse_block_size_q=64,
                     scan_extend_backend='streaming' if is_dense else 'relative',
                     sa_extend_backend='streaming',
                 )
