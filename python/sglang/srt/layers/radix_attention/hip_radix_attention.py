@@ -180,11 +180,14 @@ class RadixAttention(SRTRadixAttention):
                         stage_chunk_size=stage['stage_chunk_size'],
                         stage_k=stage['stage_k'],
                         stage_stride=stage['stage_stride'],
+                        stage_extend_backend=stage['stage_extend_backend'],
                     )
                 )
             self.stages = stages
             self.stages_second_stage_k = population[best_candidate_idx][layer_id]['second_stage_k']
-            print(layer_id, stages)
+            self.stages_sa_extend_backend = population[best_candidate_idx][layer_id]['sa_extend_backend']
+            # self.stages_second_stage_k = max(self.stages_second_stage_k, 2048)
+            print(layer_id, stages, self.stages_second_stage_k)
         else:
             self.stages = None
 
@@ -512,6 +515,8 @@ class RadixAttention(SRTRadixAttention):
                     'mid': 'streaming',
                     'low': 'streaming',
                 }[preset]
+                if self.stages is not None:
+                    config_sa_extend_backend = self.stages_sa_extend_backend
                 
                 args = HiPAttentionArgs(
                     k_cache=args.k_cache.view(torch.uint8) if args.k_cache.dtype == torch.float8_e5m2 else args.k_cache,
