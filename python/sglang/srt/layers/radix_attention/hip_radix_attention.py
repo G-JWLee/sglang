@@ -186,6 +186,8 @@ class RadixAttention(SRTRadixAttention):
             self.stages = stages
             self.stages_second_stage_k = population[best_candidate_idx][layer_id]['second_stage_k']
             self.stages_sa_extend_backend = population[best_candidate_idx][layer_id]['sa_extend_backend']
+            self.stages_sink_token_size = population[best_candidate_idx][layer_id]['sink_token_size']
+            self.stages_sliding_window_size = population[best_candidate_idx][layer_id]['sliding_window_size']
             # self.stages_second_stage_k = max(self.stages_second_stage_k, 2048)
             print(layer_id, stages, self.stages_second_stage_k)
         else:
@@ -531,8 +533,8 @@ class RadixAttention(SRTRadixAttention):
                     block_size_k=32 if IS_GEMMA else 64, # BLOCK_CHUNK
                     block_stride_k=1 if IS_GEMMA else 1,
                     
-                    sliding_window_size=8192 if is_dense else (1024 if is_decode else 1024),
-                    sink_token_size=256 if (not is_dense) else 256,
+                    sliding_window_size=(8192 if is_dense else 1024) if self.stages is None else self.stages_sliding_window_size,
+                    sink_token_size=(8192 if is_dense else 256) if self.stages is None else self.stages_sink_token_size,
                     
                     using_extend=True,
                     need_apply_rope=True,
