@@ -167,10 +167,19 @@ class RadixAttention(SRTRadixAttention):
                 data = json.load(f)
             population = data['population']
             scores = data['scores']
+            
             # best_candidate_idx = list(sorted(zip(range(len(scores)), scores), key=lambda x: x[1][1]))[0][0]
             best_candidate_idx = data['best_idx']
+            # best_candidate_idx = len(scores) // 2
+            
             print('best candidate', scores[best_candidate_idx])
-            stages_json = population[best_candidate_idx][layer_id]['stages']
+            population_layer_id = layer_id
+            if len(population[best_candidate_idx]) == 2:
+                if layer_id < 4:
+                    population_layer_id = 0
+                else:
+                    population_layer_id = 1
+            stages_json = population[best_candidate_idx][population_layer_id]['stages']
             stages = []
             for stage in stages_json:
                 stages.append(
@@ -184,10 +193,10 @@ class RadixAttention(SRTRadixAttention):
                     )
                 )
             self.stages = stages
-            self.stages_second_stage_k = population[best_candidate_idx][layer_id]['second_stage_k']
-            self.stages_sa_extend_backend = population[best_candidate_idx][layer_id]['sa_extend_backend']
-            self.stages_sink_token_size = population[best_candidate_idx][layer_id]['sink_token_size']
-            self.stages_sliding_window_size = population[best_candidate_idx][layer_id]['sliding_window_size']
+            self.stages_second_stage_k = population[best_candidate_idx][population_layer_id]['second_stage_k']
+            self.stages_sa_extend_backend = population[best_candidate_idx][population_layer_id]['sa_extend_backend']
+            self.stages_sink_token_size = population[best_candidate_idx][population_layer_id]['sink_token_size']
+            self.stages_sliding_window_size = population[best_candidate_idx][population_layer_id]['sliding_window_size']
             # self.stages_second_stage_k = max(self.stages_second_stage_k, 2048)
             print(layer_id, stages, self.stages_second_stage_k)
         else:
