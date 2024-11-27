@@ -743,6 +743,13 @@ class RadixAttention(SRTRadixAttention):
                         ScanStage(
                             stage_block_size_q=64,
                             stage_block_stride_q=1,
+                            stage_chunk_size=128,
+                            stage_k=None,
+                            stage_stride=1,
+                        ),
+                        ScanStage(
+                            stage_block_size_q=64,
+                            stage_block_stride_q=1,
                             stage_chunk_size=32,
                             stage_k=65536,
                             stage_stride=1,
@@ -758,18 +765,18 @@ class RadixAttention(SRTRadixAttention):
                         ScanStage(
                             stage_block_size_q=64,
                             stage_block_stride_q=1,
+                            stage_chunk_size=128,
+                            stage_k=None,
+                            stage_stride=1,
+                        ),
+                        ScanStage(
+                            stage_block_size_q=64,
+                            stage_block_stride_q=1,
                             stage_chunk_size=32,
                             stage_k=65536,
                             stage_stride=1,
                             stage_extend_backend='streaming',
                         ),
-                        # EvalScoreStage(
-                        #     stage_block_stride_q=1,
-                        #     stage_chunk_size=32,
-                        #     stage_k=32768,
-                        #     stage_stride=1,
-                        #     block_chunk=64,
-                        # ),
                         ScanStage(
                             stage_block_size_q=64,
                             stage_block_stride_q=1,
@@ -779,13 +786,13 @@ class RadixAttention(SRTRadixAttention):
                             stage_extend_backend='relative',
                         )
                     ],
-                    scan_stride=1 if is_dense else 1,
-                    scan_block_stride_q=-1,
+                    # scan_stride=1 if is_dense else 1,
+                    # scan_block_stride_q=-1,
                     model_context_length=envs.hip_extend_context_length,
-                    scan_early_terminate=1,
-                    stage_early_terminate=1,
+                    # scan_early_terminate=1,
+                    # stage_early_terminate=1,
                     cached_metadata=cached_metadata,
-                    block_sparse_block_size_q=64,
+                    # block_sparse_block_size_q=64,
                     scan_extend_backend='relative' if is_dense else 'relative',
                     sa_extend_backend='streaming' if is_dense else 'streaming',
                 )
