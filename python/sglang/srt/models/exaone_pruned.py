@@ -368,7 +368,7 @@ class CustomLlamaForCausalLM(nn.Module):
     def get_num_params(self):
         params_dict = dict(self.named_parameters())
         return len(params_dict)
-
+ 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
         stacked_params_mapping = [
             # (param_name, shard_name, shard_id)
